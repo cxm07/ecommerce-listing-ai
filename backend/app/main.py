@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 from app.config import Settings, settings
 from app.core import DomainError, LocalFileStorage, MemoryRepository, WorkflowApplication, json_value
 from app.models import ApprovalRequest, ApiError, ApiResponse, CreateTaskRequest, PatchProductRequest, PatchSkuRequest
+
+
+logger = logging.getLogger(__name__)
 
 
 def envelope(status: str, data: Any = None, issues: list[dict[str, Any]] | None = None, error: ApiError | None = None) -> dict[str, Any]:
@@ -26,50 +31,70 @@ def create_app(app_settings: Settings = settings, service: WorkflowApplication |
 
     @app.exception_handler(DomainError)
     async def domain_error(_: Request, exc: DomainError) -> JSONResponse:
-        issues = exc.details.pop("issues", []) if exc.details else []
-        return JSONResponse(exc.status, envelope("needs_review" if exc.code == "UNRESOLVED_ERROR_ISSUES" else "failed", None, issues, ApiError(code=exc.code, message=exc.message, details=exc.details)))
+        details = dict(exc.details) if exc.details else None
+        issues = details.pop("issues", []) if details else []
+        if details == {}:
+            details = None
+        return JSONResponse(status_code=exc.status, content=envelope("needs_review" if exc.code == "UNRESOLVED_ERROR_ISSUES" else "failed", None, issues, ApiError(code=exc.code, message=exc.message, details=details)))
 
     @app.exception_handler(ValueError)
     async def value_error(_: Request, exc: ValueError) -> JSONResponse:
-        return JSONResponse(400, envelope("failed", error=ApiError(code="INVALID_VALUE", message=str(exc))))
+        return JSONResponse(status_code=400, content=envelope("failed", error=ApiError(code="INVALID_VALUE", message=str(exc))))
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [
+            {
+                "location": list(error.get("loc", ())),
+                "message": error.get("msg", "Invalid request value"),
+                "type": error.get("type", "validation_error"),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content=envelope("failed", error=ApiError(code="VALIDATION_ERROR", message="请求参数校验失败", details={"errors": errors})))
+
+    @app.exception_handler(Exception)
+    async def internal_error(request: Request, _: Exception) -> JSONResponse:
+        logger.exception("Unhandled request error for %s", request.url.path)
+        return JSONResponse(status_code=500, content=envelope("failed", error=ApiError(code="INTERNAL_ERROR", message="服务内部错误，请稍后重试")))
 
     @app.get("/api/health", response_model=ApiResponse[dict[str, str]])
     async def health() -> dict[str, Any]: return envelope("success", {"service": "api", "version": app.version})
 
-    @app.post("/api/tasks", status_code=201)
+    @app.post("/api/tasks", status_code=201, response_model=ApiResponse[Any])
     async def create_task(body: CreateTaskRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.create_task(body.task_name, body.category))
-    @app.get("/api/tasks")
+    @app.get("/api/tasks", response_model=ApiResponse[Any])
     async def list_tasks(svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": sorted(svc.repo.tasks.values(), key=lambda item: item.updated_at, reverse=True)})
-    @app.get("/api/tasks/{task_id}")
+    @app.get("/api/tasks/{task_id}", response_model=ApiResponse[Any])
     async def get_task(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.repo.task(task_id))
-    @app.post("/api/tasks/{task_id}/files")
+    @app.post("/api/tasks/{task_id}/files", response_model=ApiResponse[Any])
     async def upload(task_id: UUID, file: UploadFile, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]:
         item = svc.upload(task_id, file.filename or "upload.xlsx", await file.read()); return envelope("success", {"file_id": str(item.id)})
-    @app.post("/api/tasks/{task_id}/parse")
+    @app.post("/api/tasks/{task_id}/parse", response_model=ApiResponse[Any])
     async def parse(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]:
         summary = svc.parse(task_id); issues = [item for item in svc.workspace(task_id)["issues"] if not item["resolved"]]; return envelope("needs_review" if issues else "success", {"summary": summary}, issues)
-    @app.get("/api/tasks/{task_id}/products")
+    @app.get("/api/tasks/{task_id}/products", response_model=ApiResponse[Any])
     async def products(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]:
         space = svc.workspace(task_id); return envelope("success", {"products": space["products"], "skus": space["skus"]})
-    @app.get("/api/tasks/{task_id}/workspace")
+    @app.get("/api/tasks/{task_id}/workspace", response_model=ApiResponse[Any])
     async def workspace(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.workspace(task_id))
-    @app.get("/api/tasks/{task_id}/issues")
+    @app.get("/api/tasks/{task_id}/issues", response_model=ApiResponse[Any])
     async def issues(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": svc.workspace(task_id)["issues"]})
-    @app.get("/api/tasks/{task_id}/content")
+    @app.get("/api/tasks/{task_id}/content", response_model=ApiResponse[Any])
     async def content(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": svc.workspace(task_id)["generated_content"]})
-    @app.get("/api/tasks/{task_id}/audit-logs")
+    @app.get("/api/tasks/{task_id}/audit-logs", response_model=ApiResponse[Any])
     async def audit_logs(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": svc.workspace(task_id)["audit_logs"]})
-    @app.patch("/api/products/{product_id}")
+    @app.patch("/api/products/{product_id}", response_model=ApiResponse[Any])
     async def patch_product(product_id: UUID, body: PatchProductRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.patch_product(product_id, body.model_dump(exclude_unset=True)))
-    @app.patch("/api/skus/{sku_id}")
+    @app.patch("/api/skus/{sku_id}", response_model=ApiResponse[Any])
     async def patch_sku(sku_id: UUID, body: PatchSkuRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.patch_sku(sku_id, body.model_dump(exclude_unset=True)))
-    @app.post("/api/tasks/{task_id}/approve-products")
+    @app.post("/api/tasks/{task_id}/approve-products", response_model=ApiResponse[Any])
     async def approve_products(task_id: UUID, body: ApprovalRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.approve_products(task_id, body.comment))
-    @app.post("/api/tasks/{task_id}/generate-copy")
+    @app.post("/api/tasks/{task_id}/generate-copy", response_model=ApiResponse[Any])
     async def generate_copy(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.generate_copy(task_id))
-    @app.post("/api/tasks/{task_id}/approve-copy")
+    @app.post("/api/tasks/{task_id}/approve-copy", response_model=ApiResponse[Any])
     async def approve_copy(task_id: UUID, body: ApprovalRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.approve_copy(task_id, body.comment))
-    @app.post("/api/tasks/{task_id}/export")
+    @app.post("/api/tasks/{task_id}/export", response_model=ApiResponse[Any])
     async def export(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]:
         item = svc.export(task_id); return envelope("success", {"file_id": str(item.id)})
     @app.get("/api/tasks/{task_id}/download")
