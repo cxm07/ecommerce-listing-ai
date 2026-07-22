@@ -1,5 +1,50 @@
 # ecommerce-listing-ai
 
+## Local clickable MVP
+
+Install the prerequisites once from the repository root:
+
+```powershell
+cd frontend
+npm ci
+cd ..\backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+cd ..
+```
+
+Start the complete local MVP from the repository root. The launcher uses `backend/.venv/Scripts/python.exe` when it exists (otherwise it uses `python` from `PATH`), starts FastAPI on port 8000 and Vite on port 5173, confirms the backend health endpoint and frontend browser URL within 30 seconds, and then opens the browser:
+
+```powershell
+.\scripts\start-mvp.ps1
+```
+
+If your project dependencies require a compatible interpreter outside the virtual environment, pass its existing executable path explicitly (the launcher validates the path before running it):
+
+```powershell
+.\scripts\start-mvp.ps1 -PythonPath 'C:\Python313\python.exe'
+```
+
+Use `-NoBrowser` when you only want the services started:
+
+```powershell
+.\scripts\start-mvp.ps1 -NoBrowser
+```
+
+The launcher prints these URLs:
+
+- Frontend browser URL: `http://localhost:5173/`
+- Backend health check: `http://localhost:8000/api/health`
+
+It will not stop an existing process. If port 8000 or 5173 is already occupied, close the process that owns that port before trying again. To stop a launcher session, close the two processes whose PIDs it printed (or stop their child server processes from Task Manager).
+
+The launcher injects `VITE_DATA_SOURCE=api` and `VITE_BACKEND_URL=http://localhost:8000` only into the Vite process. It injects `CORS_ORIGINS=["http://localhost:5173"]` only into the FastAPI process. It never creates or changes a real `.env` file.
+
+### Local data limitation
+
+This MVP uses the backend `MemoryRepository` and local file storage by default. Tasks, approvals, generated copy, and uploaded/exported files exist only in the running backend process and local `.local-data` directory. Restarting the backend clears in-memory workflow data; this is not persistent multi-user or production storage.
+
 一个用于整理电商商品资料并辅助上新的 Web 工作台。本仓库当前是业务验证型 MVP 的公共项目基线，不是正式企业系统。
 
 ## MVP 范围

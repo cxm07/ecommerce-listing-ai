@@ -25,6 +25,7 @@ coverage/
 uploads/
 exports/
 tmp/
+backend/.local-data/
 
 # IDE and OS files
 .vscode/
