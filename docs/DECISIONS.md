@@ -64,3 +64,31 @@
 - **决策**：将类目、必填字段、审批角色、合规规则、目标平台和数据保留要求视为 MVP 假设，统一维护在 [ASSUMPTIONS.md](ASSUMPTIONS.md)。
 - **原因**：避免演示规则被误用为生产制度。
 - **后果**：每次业务调研后需要更新假设、样本、知识规则、测试和相应公共文档。
+
+## D-010：工作台使用聚合读取模型，不在前端拼接业务事实
+
+- **状态**：已采纳
+- **决策**：为审核工作台提供 `GET /api/tasks/{task_id}/workspace` 及问题、文案、审核记录的只读查询端点；聚合模型只组合既有实体，不引入新状态或新数据字段。
+- **原因**：任务详情、商品、问题、文案和审计记录来自同一业务闭环。由后端提供一致的读取快照，可以避免前端在多个请求之间自行拼接并产生过期或不一致的审核视图。
+- **后果**：所有变更动作仍通过现有上传、解析、编辑、审核、生成和导出端点，以及 `WorkflowService` 完成。问题解决只能由事实修正后的后端重检决定，前端不得单独关闭问题。
+
+## D-011：统一 API 响应、审核结果与本地演示边界
+
+- **状态**：已采纳
+- **决策**：
+  1. 所有 JSON 业务响应使用 \`ApiResponse<T>\`：\`status\`、\`data\`、\`issues\`、\`error\` 四个字段始终存在；\`ApiError\` 固定为 \`code\`、\`message\`、\`details\`，其中 \`details\` 为对象或 \`null\`。
+  2. 当前 V1 定位为本地单用户演示，不实现认证和授权；401、403 只作为未来认证阶段的预留响应，文档不得声称其已实现。
+  3. 解析完成但出现业务问题使用 HTTP 200 加 \`needs_review\`：返回 ParseSummary、业务 Issue 和 \`error=null\`。商品审批因未解决 error 被阻断使用 HTTP 409 加 \`needs_review\`：\`data=null\`、\`issues\` 为阻断问题、\`error.code=UNRESOLVED_ERROR_ISSUES\`。普通非法状态使用 HTTP 409 加 \`failed\`。
+  4. HTTP 400 表示业务输入错误；HTTP 422 保留给路径、请求体和字段 Schema 校验，但必须转换为统一信封。Pydantic 错误放入 \`error.details.errors\`，不得放入 \`issues\`。
+  5. 前端 Repository 必须保留 POST \`/parse\` 的原始 ParseResult，不得用后续 Workspace 刷新把 \`needs_review + summary\` 覆盖成 \`success + Workspace\`。
+  6. 所有 JSON 成功接口后续必须显式声明 FastAPI \`response_model\`；成功下载 xlsx 是二进制响应，下载失败仍返回 JSON 错误信封。
+- **原因**：
+  - 结构化错误让前端能稳定区分审核阻断、业务失败、请求校验失败和网络失败；
+  - HTTP 200 与 409 都可表达 needs_review，但分别代表“结果已产出、需要查看”和“命令被审核闸门阻断”；
+  - 将业务 Issue 与 Schema details 分离，避免页面把接口格式错误误呈现为商品质量问题；
+  - 保留 ParseResult 可以让解析页准确展示 summary 和 needs_review，而 Workspace 只负责读取当前快照；
+  - 显式 response_model 使 OpenAPI、测试和运行时行为可共同验证。
+- **后果**：
+  - 后端需要补充 422、500 异常处理、所有 JSON 成功接口的 response_model 和契约测试；
+  - 前端需要补充非 JSON 错误、422、500、details 与 ParseResult 处理测试；
+  - 认证、401、403、持久化和部署仍需独立 PR，不能混入本次契约确认。
