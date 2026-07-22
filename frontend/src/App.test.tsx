@@ -1,13 +1,13 @@
-import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, expect, it } from 'vitest';
+import { TaskListPage } from './pages';
 
-import { TaskListPage } from './pages'
-
-describe('frontend foundation', () => {
-  it('renders the task list page with expected content', () => {
-    const html = renderToStaticMarkup(<TaskListPage />)
-
-    expect(html).toContain('任务列表')
-    expect(html).toContain('公共基线占位页面')
-  })
-})
+describe('frontend workbench', () => {
+  it('renders the task-centred workbench shell', () => {
+    const html = renderToStaticMarkup(<MemoryRouter><TaskListPage /></MemoryRouter>);
+    expect(html).toContain('商品上新任务');
+    expect(html).toContain('新建任务');
+    expect(html).toContain('审核工作台');
+  });
+});
