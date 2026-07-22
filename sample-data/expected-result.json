@@ -1,0 +1,11 @@
+{
+  "template": "mvp-products-v1",
+  "products": [
+    {
+      "product_name": "轻盈棉质短袖 T 恤",
+      "category": "服饰",
+      "material": "棉",
+      "skus": ["TSHIRT-WHITE-S", "TSHIRT-WHITE-M", "TSHIRT-BLACK-L", "TSHIRT-WHITE-M", "TSHIRT-GREEN-XL", "TSHIRT-GRAY-XXL"]
+    }
+  ]
+}
