@@ -14,10 +14,16 @@ pip install -e ".[dev]"
 cd ..
 ```
 
-Start the complete local MVP from the repository root. The launcher uses `backend/.venv/Scripts/python.exe` when it exists (otherwise it uses `python` from `PATH`), starts FastAPI on port 8000 and Vite on port 5173, and opens the browser after both processes are started:
+Start the complete local MVP from the repository root. The launcher uses `backend/.venv/Scripts/python.exe` when it exists (otherwise it uses `python` from `PATH`), starts FastAPI on port 8000 and Vite on port 5173, confirms the backend health endpoint and frontend browser URL within 30 seconds, and then opens the browser:
 
 ```powershell
 .\scripts\start-mvp.ps1
+```
+
+If your project dependencies require a compatible interpreter outside the virtual environment, pass its existing executable path explicitly (the launcher validates the path before running it):
+
+```powershell
+.\scripts\start-mvp.ps1 -PythonPath 'C:\Python313\python.exe'
 ```
 
 Use `-NoBrowser` when you only want the services started:
@@ -28,7 +34,7 @@ Use `-NoBrowser` when you only want the services started:
 
 The launcher prints these URLs:
 
-- Frontend browser and health check: `http://localhost:5173/`
+- Frontend browser URL: `http://localhost:5173/`
 - Backend health check: `http://localhost:8000/api/health`
 
 It will not stop an existing process. If port 8000 or 5173 is already occupied, close the process that owns that port before trying again. To stop a launcher session, close the two processes whose PIDs it printed (or stop their child server processes from Task Manager).

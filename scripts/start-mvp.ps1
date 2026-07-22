@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+    [string]$PythonPath,
+    [ValidateRange(1, 60)]
+    [int]$StartupTimeoutSeconds = 30
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,13 +60,67 @@ function Start-ProcessWithEnvironment {
     }
 }
 
+function Stop-StartedProcesses {
+    param([System.Diagnostics.Process[]]$Processes)
+
+    foreach ($process in $Processes) {
+        if ($null -ne $process -and -not $process.HasExited) {
+            # /T limits cleanup to descendants of this invocation's tracked PID.
+            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Wait-HttpReady {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if ($Process.HasExited) {
+            throw "Process PID $($Process.Id) exited before $Uri became available."
+        }
+
+        try {
+            $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+                return
+            }
+        }
+        catch {
+            # Startup races are expected until the bounded deadline is reached.
+        }
+
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    if ($Process.HasExited) {
+        throw "Process PID $($Process.Id) exited before $Uri became available."
+    }
+
+    throw "Timed out after $TimeoutSeconds seconds waiting for $Uri."
+}
+
 if (-not (Test-Path -LiteralPath $backendPath) -or -not (Test-Path -LiteralPath $frontendPath)) {
     throw 'The expected backend and frontend directories are missing from this repository checkout.'
 }
 
-$python = Get-RequiredCommand -Name 'python'
 $virtualEnvironmentPython = Join-Path $backendPath '.venv\Scripts\python.exe'
-$pythonPath = if (Test-Path -LiteralPath $virtualEnvironmentPython) { $virtualEnvironmentPython } else { $python.Source }
+$pythonPath = if ($PythonPath) {
+    (Resolve-Path -LiteralPath $PythonPath).Path
+}
+elseif (Test-Path -LiteralPath $virtualEnvironmentPython) {
+    $virtualEnvironmentPython
+}
+else {
+    (Get-RequiredCommand -Name 'python').Source
+}
 $null = Get-RequiredCommand -Name 'node'
 $npm = Get-RequiredCommand -Name 'npm'
 
@@ -81,16 +139,27 @@ foreach ($port in 8000, 5173) {
     }
 }
 
-$backendProcess = Start-ProcessWithEnvironment -FilePath $pythonPath -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $backendPath -Environment @{
-    CORS_ORIGINS = '["http://localhost:5173"]'
+$startedProcesses = @()
+try {
+    $backendProcess = Start-ProcessWithEnvironment -FilePath $pythonPath -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $backendPath -Environment @{
+        CORS_ORIGINS = '["http://localhost:5173"]'
+    }
+    $startedProcesses += $backendProcess
+    Wait-HttpReady -Uri $backendHealthUrl -Process $backendProcess -TimeoutSeconds $StartupTimeoutSeconds
+
+    $frontendProcess = Start-ProcessWithEnvironment -FilePath $npm.Source -ArgumentList @('run', 'dev', '--', '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $frontendPath -Environment @{
+        VITE_DATA_SOURCE = 'api'
+        VITE_BACKEND_URL = 'http://localhost:8000'
+    }
+    $startedProcesses += $frontendProcess
+    Wait-HttpReady -Uri $frontendUrl -Process $frontendProcess -TimeoutSeconds $StartupTimeoutSeconds
+}
+catch {
+    Stop-StartedProcesses -Processes $startedProcesses
+    throw
 }
 
-$frontendProcess = Start-ProcessWithEnvironment -FilePath $npm.Source -ArgumentList @('run', 'dev', '--', '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $frontendPath -Environment @{
-    VITE_DATA_SOURCE = 'api'
-    VITE_BACKEND_URL = 'http://localhost:8000'
-}
-
-Write-Output "Frontend (browser and health check): $frontendUrl"
+Write-Output "Frontend browser URL: $frontendUrl"
 Write-Output "Backend health check: $backendHealthUrl"
 Write-Output "Started backend PID $($backendProcess.Id) and frontend PID $($frontendProcess.Id)."
 Write-Output 'To stop this MVP, close the two processes above or stop their terminal-hosted child processes by PID.'
