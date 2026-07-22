@@ -1,6 +1,6 @@
 import type {
   ApiResponse,
-  AuditEvent,
+  AuditLog,
   Issue,
   Product,
   SKU,
@@ -16,11 +16,13 @@ export interface TaskRepository {
   createTask(input: NewTaskInput): Promise<ApiResponse<Task>>;
   uploadSource(taskId: string, file: File | string): Promise<ApiResponse<TaskWorkspace>>;
   startParse(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
-  resolveIssue(taskId: string, issueId: string): Promise<ApiResponse<TaskWorkspace>>;
+  updateProduct(productId: string, changes: Partial<Pick<Product, 'product_name' | 'category' | 'material'>>): Promise<ApiResponse<TaskWorkspace>>;
+  updateSku(skuId: string, changes: Partial<Pick<SKU, 'sku_code' | 'color' | 'size' | 'price' | 'stock'>>): Promise<ApiResponse<TaskWorkspace>>;
   approveProducts(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   generateCopy(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   approveCopy(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   exportTask(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
+  downloadExport(taskId: string): Promise<ApiResponse<Blob>>;
 }
 
 const now = '2026-07-22T12:00:00Z';
@@ -38,24 +40,24 @@ function makeDemoWorkspace(): TaskWorkspace {
     ['sku-5', 'TSHIRT-GREEN-XL', null, 'XL', null, 4, 7],
     ['sku-6', 'TSHIRT-GRAY-XXL', '灰色', 'XXL', 89, null, 8],
   ].map(([id, sku_code, color, size, price, stock, source_row]) => ({ id: String(id), product_id: product.id, sku_code: String(sku_code), color: color as string | null, size: size as string | null, price: price as number | null, stock: stock as number | null, source_row: Number(source_row), source_payload: {}, created_at: now, updated_at: now }));
-  const issue = (id: string, severity: Issue['severity'], code: string, field: string, message: string, skuId: string | null, row: number): Issue => ({ id, task_id: task.id, product_id: product.id, sku_id: skuId, code, field, severity, message, source_ref: `Excel 第 ${row} 行`, resolved: false, created_at: now });
+  const issue = (id: string, severity: Issue['severity'], code: string, field: string, message: string, skuId: string | null, row: number): Issue => ({ id, task_id: task.id, product_id: product.id, sku_id: skuId, code, field, severity, message, source_ref: { file_id: 'file-source', file_name: '夏季短袖上新.xlsx', template: 'mvp-products-v1', sheet: 'Products', row, field }, resolved: false, created_at: now });
   const issues = [
     issue('issue-duplicate', 'error', 'DUPLICATE_SKU', 'sku_code', 'SKU 编码 TSHIRT-WHITE-M 重复', 'sku-4', 6),
     issue('issue-color', 'warning', 'MISSING_COLOR', 'color', '颜色缺失，建议补齐后再导出', 'sku-5', 7),
     issue('issue-price', 'error', 'INVALID_PRICE', 'price', '价格格式无效，需要人工确认', 'sku-5', 7),
     issue('issue-stock', 'warning', 'MISSING_STOCK', 'stock', '库存缺失，建议补齐后再导出', 'sku-6', 8),
   ];
-  const audit_events: AuditEvent[] = [
-    { id: 'audit-1', task_id: task.id, actor: '系统', event: 'Excel 解析完成', source: '解析服务', detail: '识别 1 个商品、6 个 SKU 和 4 个问题', created_at: '2026-07-22T11:40:00Z' },
-    { id: 'audit-2', task_id: task.id, actor: '系统', event: '进入商品审核', source: '工作流', detail: '等待人工确认标准化结果', created_at: '2026-07-22T11:41:00Z' },
+  const audit_logs: AuditLog[] = [
+    { id: 'audit-1', task_id: task.id, actor_id: 'system', action: 'parsing_completed', source_ref: null, created_at: '2026-07-22T11:40:00Z' },
+    { id: 'audit-2', task_id: task.id, actor_id: 'system', action: 'waiting_product_review', source_ref: null, created_at: '2026-07-22T11:41:00Z' },
   ];
-  return { task, files: [{ id: 'file-source', task_id: task.id, storage_path: '/mock/summer-tshirt.xlsx', original_filename: '夏季短袖上新.xlsx', file_kind: 'source', created_at: now }], products: [product], skus, issues, generated_content: [{ id: 'copy-1', task_id: task.id, product_id: product.id, title: '轻盈棉质短袖 T 恤｜夏日基础衣橱', selling_points: ['棉质面料，亲肤透气', '基础版型，便于日常搭配', '多尺码可选'], unsupported_claims: ['“绝对不褪色”缺少原始资料支持'], model_metadata: { provider: 'mock' }, created_at: now }], approvals: [], audit_events };
+  return { task, files: [{ id: 'file-source', task_id: task.id, storage_path: '/mock/summer-tshirt.xlsx', original_filename: '夏季短袖上新.xlsx', file_kind: 'source', created_at: now }], products: [product], skus, issues, generated_content: [], approvals: [], audit_logs };
 }
 
 export function createMockTaskRepository(): TaskRepository {
   const workspaces = new Map<string, TaskWorkspace>([['task-demo', makeDemoWorkspace()]]);
   const find = (taskId: string) => workspaces.get(taskId);
-  const audit = (workspace: TaskWorkspace, event: string, detail: string) => workspace.audit_events.unshift({ id: `audit-${workspace.audit_events.length + 1}`, task_id: workspace.task.id, actor: '当前审核人', event, source: '前端 Mock', detail, created_at: new Date().toISOString() });
+  const audit = (workspace: TaskWorkspace, action: string, _detail?: string) => workspace.audit_logs.unshift({ id: `audit-${workspace.audit_logs.length + 1}`, task_id: workspace.task.id, actor_id: 'current-user', action, source_ref: null, created_at: new Date().toISOString() });
 
   return {
     async listTasks() { return success([...workspaces.values()].map(({ task }) => task)); },
@@ -63,7 +65,7 @@ export function createMockTaskRepository(): TaskRepository {
     async createTask(input) {
       const id = `task-${Date.now()}`;
       const task: Task = { id, ...input, status: 'DRAFT', creator_id: 'current-user', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-      workspaces.set(id, { task, files: [], products: [], skus: [], issues: [], generated_content: [], approvals: [], audit_events: [] });
+      workspaces.set(id, { task, files: [], products: [], skus: [], issues: [], generated_content: [], approvals: [], audit_logs: [] });
       return success(task);
     },
     async uploadSource(taskId, file) {
@@ -80,10 +82,29 @@ export function createMockTaskRepository(): TaskRepository {
       if (workspace.task.status !== 'UPLOADED') return failure('INVALID_TASK_STATE', '请先上传源文件');
       workspace.task.status = 'WAITING_PRODUCT_REVIEW'; audit(workspace, '解析完成', 'Mock 数据已准备好，等待商品审核'); return success(workspace, workspace.issues);
     },
-    async resolveIssue(taskId, issueId) {
-      const workspace = find(taskId); const issue = workspace?.issues.find((item) => item.id === issueId);
-      if (!workspace || !issue) return failure('ISSUE_NOT_FOUND', '未找到需要处理的问题');
-      issue.resolved = true; audit(workspace, '处理问题', issue.message); return success(workspace, workspace.issues.filter((item) => !item.resolved));
+    async updateProduct(productId, changes) {
+      const workspace = [...workspaces.values()].find((item) => item.products.some((product) => product.id === productId));
+      const product = workspace?.products.find((item) => item.id === productId);
+      if (!workspace || !product) return failure('PRODUCT_NOT_FOUND', '未找到商品');
+      if (workspace.task.status !== 'WAITING_PRODUCT_REVIEW') return failure('INVALID_TASK_STATE', '当前状态不能修改商品');
+      Object.assign(product, changes); audit(workspace, 'product_updated'); return success(workspace, workspace.issues.filter((item) => !item.resolved));
+    },
+    async updateSku(skuId, changes) {
+      const workspace = [...workspaces.values()].find((item) => item.skus.some((sku) => sku.id === skuId));
+      const sku = workspace?.skus.find((item) => item.id === skuId);
+      if (!workspace || !sku) return failure('SKU_NOT_FOUND', '未找到 SKU');
+      if (workspace.task.status !== 'WAITING_PRODUCT_REVIEW') return failure('INVALID_TASK_STATE', '当前状态不能修改 SKU');
+      Object.assign(sku, changes);
+      const counts = new Map<string, number>();
+      workspace.skus.forEach((item) => { if (item.sku_code) counts.set(item.sku_code, (counts.get(item.sku_code) ?? 0) + 1); });
+      workspace.issues.forEach((issue) => {
+        const target = workspace.skus.find((item) => item.id === issue.sku_id);
+        if (issue.code === 'DUPLICATE_SKU') issue.resolved = !target?.sku_code || (counts.get(target.sku_code) ?? 0) < 2;
+        if (issue.code === 'INVALID_PRICE') issue.resolved = typeof target?.price === 'number' && target.price > 0;
+        if (issue.code === 'MISSING_COLOR') issue.resolved = Boolean(target?.color);
+        if (issue.code === 'MISSING_STOCK') issue.resolved = typeof target?.stock === 'number';
+      });
+      audit(workspace, 'sku_updated'); return success(workspace, workspace.issues.filter((item) => !item.resolved));
     },
     async approveProducts(taskId) {
       const workspace = find(taskId); if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
@@ -95,6 +116,7 @@ export function createMockTaskRepository(): TaskRepository {
     async generateCopy(taskId) {
       const workspace = find(taskId); if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
       if (workspace.task.status !== 'PRODUCT_APPROVED') return failure('INVALID_TASK_STATE', '请先完成商品审核');
+      workspace.generated_content = workspace.products.map((product) => ({ id: `content-${product.id}`, task_id: workspace.task.id, product_id: product.id, title: [product.product_name, product.category].filter(Boolean).join(' · '), selling_points: product.category ? [`类目：${product.category}`] : [], unsupported_claims: [], model_metadata: { provider: 'mock', model: 'deterministic-template-v1' }, created_at: new Date().toISOString() }));
       workspace.task.status = 'WAITING_COPY_REVIEW'; audit(workspace, '文案生成完成', '等待人工审核文案'); return success(workspace);
     },
     async approveCopy(taskId) {
@@ -106,6 +128,12 @@ export function createMockTaskRepository(): TaskRepository {
       const workspace = find(taskId); if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
       if (workspace.task.status !== 'APPROVED') return failure('INVALID_TASK_STATE', '仅已审核通过的任务可以导出');
       workspace.task.status = 'EXPORTED'; workspace.files.push({ id: `export-${Date.now()}`, task_id: taskId, storage_path: '/mock/listing-result.xlsx', original_filename: '电商上新结果.xlsx', file_kind: 'export', created_at: new Date().toISOString() }); audit(workspace, '导出完成', '已生成电商上新结果.xlsx'); return success(workspace);
+    },
+    async downloadExport(taskId) {
+      const workspace = find(taskId);
+      if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
+      if (workspace.task.status !== 'EXPORTED') return failure('INVALID_TASK_STATE', '当前状态不能下载');
+      return success(new Blob(['Mock export'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     },
   };
 }

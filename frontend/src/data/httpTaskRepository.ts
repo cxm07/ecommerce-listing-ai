@@ -15,22 +15,12 @@ const networkFailure = <T,>(): ApiResponse<T> => ({
   error: { code: 'NETWORK_ERROR', message: '无法连接后端服务，请检查服务是否已启动。' },
 });
 
-const invalidAction = <T,>(): ApiResponse<T> => ({
-  status: 'failed',
-  data: null,
-  issues: [],
-  error: { code: 'BACKEND_REVALIDATION_REQUIRED', message: '请修改商品或 SKU 事实后由后端重新检测问题。' },
-});
-
 export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskRepositoryOptions): TaskRepository {
   const request = async <T,>(path: string, init?: RequestInit): Promise<ApiResponse<T>> => {
     try {
       const response = await fetchFn(`${baseUrl.replace(/\/$/, '')}${path}`, init);
       const payload = await response.json() as ApiResponse<T>;
-      if (!response.ok) {
-        return { status: 'failed', data: null, issues: payload.issues ?? [], error: payload.error ?? { code: `HTTP_${response.status}`, message: '后端请求失败。' } };
-      }
-      return payload;
+      return response.ok || payload.status ? payload : { status: 'failed', data: null, issues: [], error: { code: `HTTP_${response.status}`, message: '后端请求失败。' } };
     } catch {
       return networkFailure<T>();
     }
@@ -40,6 +30,18 @@ export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskR
     const result = await request<unknown>(path, init);
     if (!result.data) return result as ApiResponse<TaskWorkspace>;
     return request<TaskWorkspace>(`/api/tasks/${taskId}/workspace`);
+  };
+  const download = async (taskId: string): Promise<ApiResponse<Blob>> => {
+    try {
+      const response = await fetchFn(`${baseUrl.replace(/\/$/, '')}/api/tasks/${taskId}/download`);
+      if (!response.ok) {
+        const payload = await response.json() as ApiResponse<Blob>;
+        return payload;
+      }
+      return { status: 'success', data: await response.blob(), issues: [], error: null };
+    } catch {
+      return networkFailure<Blob>();
+    }
   };
 
   return {
@@ -55,10 +57,12 @@ export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskR
       return workspaceAfter(taskId, `/api/tasks/${taskId}/files`, { method: 'POST', body: form });
     },
     startParse: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/parse`, json('POST')),
-    resolveIssue: async () => invalidAction<TaskWorkspace>(),
+    updateProduct: (productId, changes) => request<TaskWorkspace>(`/api/products/${productId}`, json('PATCH', changes)),
+    updateSku: (skuId, changes) => request<TaskWorkspace>(`/api/skus/${skuId}`, json('PATCH', changes)),
     approveProducts: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/approve-products`, json('POST', { decision: 'approved' })),
     generateCopy: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/generate-copy`, json('POST')),
     approveCopy: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/approve-copy`, json('POST', { decision: 'approved' })),
     exportTask: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/export`, json('POST')),
+    downloadExport: download,
   };
 }

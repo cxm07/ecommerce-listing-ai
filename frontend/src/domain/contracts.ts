@@ -10,6 +10,7 @@ export interface ApiResponse<T> {
 export interface ApiError {
   code: string;
   message: string;
+  details?: Record<string, unknown> | null;
 }
 
 export type TaskStatus =
@@ -46,8 +47,8 @@ export interface TaskFile {
 export interface Product {
   id: string;
   task_id: string;
-  product_name: string;
-  category: string;
+  product_name: string | null;
+  category: string | null;
   material: string | null;
   source_row: number;
   source_payload: Record<string, unknown>;
@@ -58,7 +59,7 @@ export interface Product {
 export interface SKU {
   id: string;
   product_id: string;
-  sku_code: string;
+  sku_code: string | null;
   color: string | null;
   size: string | null;
   price: number | null;
@@ -80,7 +81,7 @@ export interface Issue {
   field: string;
   severity: IssueSeverity;
   message: string;
-  source_ref: string;
+  source_ref: SourceRef;
   resolved: boolean;
   created_at: string;
 }
@@ -106,14 +107,22 @@ export interface Approval {
   created_at: string;
 }
 
-export interface AuditEvent {
+export interface SourceRef {
+  file_id: string | null;
+  file_name: string | null;
+  template: string | null;
+  sheet: string | null;
+  row: number | null;
+  field: string | null;
+}
+
+export interface AuditLog {
   id: string;
   task_id: string;
-  actor: string;
-  event: string;
-  source: string;
+  actor_id: string | null;
+  action: string;
+  source_ref: SourceRef | null;
   created_at: string;
-  detail: string;
 }
 
 export interface TaskWorkspace {
@@ -124,5 +133,5 @@ export interface TaskWorkspace {
   issues: Issue[];
   generated_content: GeneratedContent[];
   approvals: Approval[];
-  audit_events: AuditEvent[];
+  audit_logs: AuditLog[];
 }
