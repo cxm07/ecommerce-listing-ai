@@ -1,4 +1,4 @@
-import type { ApiResponse, Issue, Task, TaskWorkspace } from '../domain/contracts';
+import type { ApiResponse, Issue, ParseResult, Task, TaskWorkspace } from '../domain/contracts';
 import type { TaskRepository } from './mockTaskRepository';
 
 type FetchLike = typeof fetch;
@@ -12,31 +12,73 @@ const networkFailure = <T,>(): ApiResponse<T> => ({
   status: 'failed',
   data: null,
   issues: [],
-  error: { code: 'NETWORK_ERROR', message: '无法连接后端服务，请检查服务是否已启动。' },
+  error: { code: 'NETWORK_ERROR', message: '无法连接后端服务，请检查服务是否已启动。', details: null },
 });
+
+const isEnvelope = <T,>(value: unknown): value is ApiResponse<T> => {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<ApiResponse<T>>;
+  return (candidate.status === 'success' || candidate.status === 'needs_review' || candidate.status === 'failed')
+    && Array.isArray(candidate.issues)
+    && Object.hasOwn(candidate, 'data')
+    && Object.hasOwn(candidate, 'error');
+};
+
+const httpFailure = <T,>(response: Response, responseText: string): ApiResponse<T> => ({
+  status: 'failed',
+  data: null,
+  issues: [],
+  error: {
+    code: `HTTP_${response.status}`,
+    message: '后端返回了无法解析的错误响应。',
+    details: {
+      status: response.status,
+      content_type: response.headers.get('content-type'),
+      body_preview: responseText.slice(0, 500),
+    },
+  },
+});
+
+const readEnvelope = async <T,>(response: Response): Promise<{ payload: ApiResponse<T> | null; responseText: string }> => {
+  const responseText = await response.text();
+  if (!responseText.trim()) return { payload: null, responseText };
+  try {
+    const value: unknown = JSON.parse(responseText);
+    return { payload: isEnvelope<T>(value) ? value : null, responseText };
+  } catch {
+    return { payload: null, responseText };
+  }
+};
 
 export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskRepositoryOptions): TaskRepository {
   const request = async <T,>(path: string, init?: RequestInit): Promise<ApiResponse<T>> => {
     try {
       const response = await fetchFn(`${baseUrl.replace(/\/$/, '')}${path}`, init);
-      const payload = await response.json() as ApiResponse<T>;
-      return response.ok || payload.status ? payload : { status: 'failed', data: null, issues: [], error: { code: `HTTP_${response.status}`, message: '后端请求失败。' } };
+      const { payload, responseText } = await readEnvelope<T>(response);
+      return payload ?? httpFailure<T>(response, responseText);
     } catch {
       return networkFailure<T>();
     }
   };
-  const json = (method: string, body?: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+  const json = (method: string, body?: unknown): RequestInit => ({
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
   const workspaceAfter = async (taskId: string, path: string, init: RequestInit): Promise<ApiResponse<TaskWorkspace>> => {
     const result = await request<unknown>(path, init);
     if (!result.data) return result as ApiResponse<TaskWorkspace>;
     return request<TaskWorkspace>(`/api/tasks/${taskId}/workspace`);
   };
+
   const download = async (taskId: string): Promise<ApiResponse<Blob>> => {
     try {
       const response = await fetchFn(`${baseUrl.replace(/\/$/, '')}/api/tasks/${taskId}/download`);
       if (!response.ok) {
-        const payload = await response.json() as ApiResponse<Blob>;
-        return payload;
+        const { payload, responseText } = await readEnvelope<Blob>(response);
+        return payload ?? httpFailure<Blob>(response, responseText);
       }
       return { status: 'success', data: await response.blob(), issues: [], error: null };
     } catch {
@@ -52,11 +94,14 @@ export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskR
     getWorkspace: (taskId) => request<TaskWorkspace>(`/api/tasks/${taskId}/workspace`),
     createTask: (input) => request<Task>('/api/tasks', json('POST', input)),
     async uploadSource(taskId, file) {
-      if (typeof file === 'string') return { status: 'failed', data: null, issues: [], error: { code: 'FILE_REQUIRED', message: '真实接口模式需要选择本地 Excel 文件。' } };
-      const form = new FormData(); form.append('file', file);
+      if (typeof file === 'string') {
+        return { status: 'failed', data: null, issues: [], error: { code: 'FILE_REQUIRED', message: '真实接口模式需要选择本地 Excel 文件。', details: null } };
+      }
+      const form = new FormData();
+      form.append('file', file);
       return workspaceAfter(taskId, `/api/tasks/${taskId}/files`, { method: 'POST', body: form });
     },
-    startParse: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/parse`, json('POST')),
+    startParse: (taskId) => request<ParseResult>(`/api/tasks/${taskId}/parse`, json('POST')),
     updateProduct: (productId, changes) => request<TaskWorkspace>(`/api/products/${productId}`, json('PATCH', changes)),
     updateSku: (skuId, changes) => request<TaskWorkspace>(`/api/skus/${skuId}`, json('PATCH', changes)),
     approveProducts: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/approve-products`, json('POST', { decision: 'approved' })),

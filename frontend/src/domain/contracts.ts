@@ -10,7 +10,7 @@ export interface ApiResponse<T> {
 export interface ApiError {
   code: string;
   message: string;
-  details?: Record<string, unknown> | null;
+  details: Record<string, unknown> | null;
 }
 
 export type TaskStatus =
@@ -134,4 +134,17 @@ export interface TaskWorkspace {
   generated_content: GeneratedContent[];
   approvals: Approval[];
   audit_logs: AuditLog[];
+}
+
+export interface ParseSummary {
+  product_count: number;
+  sku_count: number;
+  issue_count: number;
+  error_count: number;
+  warning_count: number;
+  info_count: number;
+}
+
+export interface ParseResult {
+  summary: ParseSummary;
 }
