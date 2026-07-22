@@ -1,0 +1,1 @@
+{"type":"object","required":["product_id","risk_level","claims","safe_facts_used","missing_evidence","needs_human_review"],"properties":{"product_id":{"type":"string"},"risk_level":{"enum":["low","medium","high"]},"claims":{"type":"array"},"safe_facts_used":{"type":"array"},"missing_evidence":{"type":"array"},"needs_human_review":{"const":true}}}
