@@ -7,6 +7,8 @@ import { SkuEditor } from './components/SkuEditor';
 import { triggerBlobDownload } from './domain/download';
 import { getTaskActionState, getWorkflowStepIndex, taskStatusLabels, workflowSteps } from './domain/workflow';
 import { taskRepository } from './data/repositoryFactory';
+import { NavigationItem } from './components/NavigationItem';
+import { WorkspaceStep } from './components/WorkspaceStep';
 
 const demoId = 'task-demo';
 const isApiMode = import.meta.env.VITE_DATA_SOURCE === 'api';
@@ -16,9 +18,9 @@ const errors = (issues: Issue[]) => issues.filter((issue) => issue.severity === 
 
 function StatusPill({ status }: { status: Task['status'] }) { return <span className={`status status-${status.toLowerCase()}`}>{taskStatusLabels[status]}</span>; }
 function Shell({ title, eyebrow, children, action }: { title: string; eyebrow: string; children: React.ReactNode; action?: React.ReactNode }) {
-  return <div className="app-shell"><aside className="sidebar"><Link className="brand" to="/tasks"><span>EA</span><b>上新工作台</b></Link><nav><Link to="/tasks">任务中心</Link><Link to={`/tasks/${demoId}/products`}>审核工作台</Link><Link to={`/tasks/${demoId}/audit`}>审核记录</Link></nav><div className="sidebar-foot">MVP · 前端演示<br /><small>数据来自{dataSourceLabel}</small></div></aside><main className="workspace"><header className="topbar"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>{action}</header>{children}</main></div>;
+  return <div className="app-shell"><aside className="sidebar"><Link className="brand" to="/tasks"><span>EA</span><b>上新工作台</b></Link><nav><NavigationItem to="/tasks" label="任务中心" activeWhen={(path) => path === '/' || path === '/tasks' || path === '/tasks/new'} /><NavigationItem to={`/tasks/${demoId}/products`} label="审核工作台" activeWhen={(path) => path.includes('/products') || path.includes('/copy') || path.includes('/export') || path.includes('/processing') || path.includes('/upload')} /><NavigationItem to={`/tasks/${demoId}/audit`} label="审核记录" activeWhen={(path) => path.includes('/audit')} /></nav><div className="sidebar-foot">MVP · 前端演示<br /><small>数据来自{dataSourceLabel}</small></div></aside><main className="workspace"><header className="topbar"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>{action}</header>{children}</main></div>;
 }
-function Stepper({ workspace }: { workspace: TaskWorkspace }) { const current = getWorkflowStepIndex(workspace.task.status); return <ol className="stepper">{workflowSteps.map((step, index) => <li key={step.status} className={index <= current ? 'complete' : ''}><i>{index + 1}</i><span>{step.label}</span></li>)}</ol>; }
+function Stepper({ workspace }: { workspace: TaskWorkspace }) { return <WorkspaceStep status={workspace.task.status} />; }
 function IssuePanel({ issues }: { issues: Issue[] }) { const open = issues.filter((issue) => !issue.resolved); return <section className="panel issue-panel"><div className="panel-title"><div><p className="eyebrow">数据质量</p><h2>待处理问题</h2></div><strong>{open.length}</strong></div>{open.length === 0 ? <p className="empty">没有未处理问题，可以继续审核。</p> : <div className="issue-list">{open.map((issue) => <article key={issue.id} className={`issue ${issue.severity}`}><span>{issue.severity === 'error' ? '错误' : issue.severity === 'warning' ? '提醒' : '提示'}</span><div><b>{issue.message}</b><small>{formatSourceRef(issue.source_ref)}</small></div></article>)}</div>}<p className="muted">请修正对应商品或 SKU 事实；后端重新检测后会更新问题状态。</p></section>; }
 function useWorkspace() { const { taskId = demoId } = useParams(); const [workspace, setWorkspace] = useState<TaskWorkspace | null>(null); const [message, setMessage] = useState(''); const load = async () => { const result = await taskRepository.getWorkspace(taskId); if (result.data) setWorkspace({ ...result.data }); }; useEffect(() => { void load(); }, [taskId]); return { taskId, workspace, setWorkspace, message, setMessage, reload: load }; }
 
