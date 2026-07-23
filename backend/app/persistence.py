@@ -16,7 +16,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from app.core import DomainError, Task, now
+from app.core import Approval, AuditLog, DomainError, GeneratedContent, Issue, Product, SKU, Task, TaskFile
 from app.workflow import TaskStatus
 
 
@@ -80,11 +80,12 @@ class PostgresUnitOfWork:
 
 class PostgresRepository:
     """Minimal persistent task boundary; expanded aggregate mappers belong here."""
-    def __init__(self, database_url: str, min_size: int = 1, max_size: int = 5) -> None:
+    def __init__(self, database_url: str, actor_id: UUID, min_size: int = 1, max_size: int = 5) -> None:
         if not database_url:
             raise DomainError("INVALID_REPOSITORY_CONFIG", "SUPABASE_DB_URL 未配置", 500)
         self.pool = ConnectionPool(conninfo=database_url, min_size=min_size, max_size=max_size, open=False)
         self._active: ContextVar[PostgresUnitOfWork | None] = ContextVar("postgres_uow", default=None)
+        self.actor_id = actor_id
 
     def open(self) -> None: self.pool.open(wait=True)
     def close(self) -> None: self.pool.close()
@@ -121,3 +122,61 @@ class PostgresRepository:
             where id=%s and version=%s and archived_at is null returning version""", (status.value, task_id, expected_version)).fetchone()
         if row is None: raise DomainError("CONCURRENT_MODIFICATION", "任务已被其他请求修改，请刷新后重试", 409)
         return int(row["version"])
+
+    def _actor(self) -> UUID:
+        """The V2 static actor is validated against profiles by PostgreSQL FK."""
+        return self.actor_id
+
+    def get_product(self, product_id: UUID) -> Product:
+        row = self._cursor().execute("select * from public.products where id=%s", (product_id,)).fetchone()
+        if row is None: raise DomainError("PRODUCT_NOT_FOUND", "未找到商品", 404)
+        return Product(row["id"], row["task_id"], row["product_name"], row["category"], row["material"], row["source_row"], row["source_payload"], row["created_at"].isoformat(), row["updated_at"].isoformat())
+
+    def get_sku(self, sku_id: UUID) -> SKU:
+        row = self._cursor().execute("select * from public.skus where id=%s", (sku_id,)).fetchone()
+        if row is None: raise DomainError("SKU_NOT_FOUND", "未找到 SKU", 404)
+        return SKU(row["id"], row["product_id"], row["sku_code"], row["color"], row["size"], row["price"], row["stock"], row["source_row"], row["source_payload"], row["created_at"].isoformat(), row["updated_at"].isoformat())
+
+    def list_task_files(self, task_id: UUID) -> list[TaskFile]:
+        rows = self._cursor().execute("select * from public.task_files where task_id=%s order by created_at", (task_id,)).fetchall()
+        return [TaskFile(r["id"], r["task_id"], r["storage_path"], r["original_filename"], r["file_kind"], r["created_at"].isoformat()) for r in rows]
+
+    def list_products(self, task_id: UUID) -> list[Product]:
+        rows = self._cursor().execute("select id from public.products where task_id=%s order by created_at", (task_id,)).fetchall()
+        return [self.get_product(r["id"]) for r in rows]
+
+    def list_skus(self, task_id: UUID) -> list[SKU]:
+        rows = self._cursor().execute("select s.id from public.skus s join public.products p on p.id=s.product_id where p.task_id=%s order by s.created_at", (task_id,)).fetchall()
+        return [self.get_sku(r["id"]) for r in rows]
+
+    def list_issues(self, task_id: UUID) -> list[Issue]:
+        rows = self._cursor().execute("select * from public.issues where task_id=%s order by created_at", (task_id,)).fetchall()
+        return [Issue(r["id"],r["task_id"],r["product_id"],r["sku_id"],r["code"],r["field"],r["severity"],r["message"],r["source_ref"],r["issue_signature"],r["resolved"],r["created_at"].isoformat()) for r in rows]
+
+    def list_generated_content(self, task_id: UUID) -> list[GeneratedContent]:
+        rows=self._cursor().execute("select * from public.generated_contents where task_id=%s order by created_at",(task_id,)).fetchall()
+        return [GeneratedContent(r["id"],r["task_id"],r["product_id"],r["title"],r["selling_points"],r["unsupported_claims"],r["model_metadata"],r["created_at"].isoformat()) for r in rows]
+
+    def list_approvals(self, task_id: UUID) -> list[Approval]:
+        rows=self._cursor().execute("select * from public.approvals where task_id=%s order by created_at",(task_id,)).fetchall()
+        return [Approval(r["id"],r["task_id"],str(r["reviewer_id"]),r["approval_type"],r["decision"],r["comment"],r["created_at"].isoformat()) for r in rows]
+
+    def list_audit_logs(self, task_id: UUID) -> list[AuditLog]:
+        rows=self._cursor().execute("select * from public.audit_logs where task_id=%s order by created_at desc",(task_id,)).fetchall()
+        return [AuditLog(r["id"],r["task_id"],str(r["actor_id"]) if r["actor_id"] else None,r["action"],r["source_ref"],r["created_at"].isoformat()) for r in rows]
+
+    def find_issue(self, signature: str) -> Issue | None:
+        row=self._cursor().execute("select * from public.issues where issue_signature=%s",(signature,)).fetchone()
+        return None if row is None else Issue(row["id"],row["task_id"],row["product_id"],row["sku_id"],row["code"],row["field"],row["severity"],row["message"],row["source_ref"],row["issue_signature"],row["resolved"],row["created_at"].isoformat())
+
+    def add_file(self, x: TaskFile) -> None: self._cursor().execute("insert into public.task_files(id,task_id,storage_path,original_filename,file_kind,size_bytes,created_by,created_at) values(%s,%s,%s,%s,%s,0,%s,%s)",(x.id,x.task_id,x.storage_path,x.original_filename,x.file_kind,self._actor(),x.created_at))
+    def add_product(self, x: Product) -> None: self._cursor().execute("insert into public.products(id,task_id,product_name,category,material,source_row,source_payload,created_by,updated_by,created_at,updated_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.product_name,x.category,x.material,x.source_row,x.source_payload,self._actor(),self._actor(),x.created_at,x.updated_at))
+    def add_sku(self, x: SKU) -> None: self._cursor().execute("insert into public.skus(id,product_id,sku_code,color,size,price,stock,source_row,source_payload,created_by,updated_by,created_at,updated_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.product_id,x.sku_code,x.color,x.size,x.price,x.stock,x.source_row,x.source_payload,self._actor(),self._actor(),x.created_at,x.updated_at))
+    def add_issue(self, x: Issue) -> None: self._cursor().execute("insert into public.issues(id,task_id,product_id,sku_id,issue_signature,code,field,severity,message,source_ref,resolved,created_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.product_id,x.sku_id,x.signature,x.code,x.field,x.severity,x.message,x.source_ref,x.resolved,x.created_at))
+    def add_content(self, x: GeneratedContent) -> None: self._cursor().execute("insert into public.generated_contents(id,task_id,product_id,version,title,selling_points,unsupported_claims,model_metadata,created_at) values(%s,%s,%s,1,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.product_id,x.title,x.selling_points,x.unsupported_claims,x.model_metadata,x.created_at))
+    def add_approval(self, x: Approval) -> None: self._cursor().execute("insert into public.approvals(id,task_id,reviewer_id,approval_type,decision,comment,created_at) values(%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,self._actor(),x.approval_type,x.decision,x.comment,x.created_at))
+    def add_audit(self, x: AuditLog) -> None: self._cursor().execute("insert into public.audit_logs(id,task_id,actor_id,action,source_ref,created_at) values(%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,self._actor(),x.action,x.source_ref,x.created_at))
+    def update_task(self, x: Task) -> None: self._cursor().execute("update public.tasks set status=%s,updated_at=%s,version=version+1 where id=%s",(x.status.value,x.updated_at,x.id))
+    def update_product(self, x: Product) -> None: self._cursor().execute("update public.products set product_name=%s,category=%s,material=%s,updated_at=%s,updated_by=%s where id=%s",(x.product_name,x.category,x.material,x.updated_at,self._actor(),x.id))
+    def update_sku(self, x: SKU) -> None: self._cursor().execute("update public.skus set sku_code=%s,color=%s,size=%s,price=%s,stock=%s,updated_at=%s,updated_by=%s where id=%s",(x.sku_code,x.color,x.size,x.price,x.stock,x.updated_at,self._actor(),x.id))
+    def update_issue(self, x: Issue) -> None: self._cursor().execute("update public.issues set resolved=%s,resolved_at=case when %s then now() else null end,resolved_by=case when %s then %s else null end where id=%s",(x.resolved,x.resolved,x.resolved,self._actor(),x.id))

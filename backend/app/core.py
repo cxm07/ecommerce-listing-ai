@@ -149,6 +149,10 @@ class MemoryRepository:
     def add_content(self, item: GeneratedContent) -> None: self._contents[item.id] = item
     def add_approval(self, item: Approval) -> None: self._approvals[item.id] = item
     def add_audit(self, item: AuditLog) -> None: self._audits[item.id] = item
+    def update_task(self, item: Task) -> None: self._tasks[item.id] = item
+    def update_product(self, item: Product) -> None: self._products[item.id] = item
+    def update_sku(self, item: SKU) -> None: self._skus[item.id] = item
+    def update_issue(self, item: Issue) -> None: self._issues[item.id] = item
     def unit_of_work(self) -> MemoryUnitOfWork: return MemoryUnitOfWork(self)
 
 
@@ -219,7 +223,7 @@ class WorkflowApplication:
     def list_tasks(self) -> list[Task]: return sorted(self.repo.list_tasks(), key=lambda item: item.updated_at, reverse=True)
     def get_task(self, task_id: UUID) -> Task: return self.repo.get_task(task_id)
     def transition(self, task: Task, target: TaskStatus, action: str) -> None:
-        task.status = self.workflow.transition(task.status, target); task.updated_at = now(); self.audit(task.id, action)
+        task.status = self.workflow.transition(task.status, target); task.updated_at = now(); self.repo.update_task(task); self.audit(task.id, action)
     @atomic
     def create_task(self, name: str, category: str) -> Task:
         name, category = clean(name), clean(category)
@@ -284,11 +288,11 @@ class WorkflowApplication:
         for product_id, sku_id, code, field_name, severity, message, row in wanted:
             signature = f"{code}:{product_id}:{sku_id if sku_id.int else ''}:{field_name}:{row}"; signatures.add(signature)
             existing = self.repo.find_issue(signature)
-            if existing: existing.resolved = False; continue
+            if existing: existing.resolved = False; self.repo.update_issue(existing); continue
             ref = {"file_id": str(source.id), "file_name": source.original_filename, "template": "mvp-products-v1", "sheet": "Products", "row": row, "field": field_name}
             issue = Issue(uuid4(), task_id, product_id, sku_id if sku_id.int else None, code, field_name, severity, message, ref, signature); self.repo.add_issue(issue)
         for issue in self.repo.list_issues(task_id):
-            if issue.signature not in signatures: issue.resolved = True
+            if issue.signature not in signatures: issue.resolved = True; self.repo.update_issue(issue)
     def workspace(self, task_id: UUID) -> dict[str, Any]:
         task = self.repo.get_task(task_id); products = self.repo.list_products(task_id); skus = self.repo.list_skus(task_id)
         return json_value({"task": asdict(task), "files": [asdict(x) for x in self.repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in self.repo.list_issues(task_id)], "generated_content": [asdict(x) for x in self.repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in self.repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(self.repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
@@ -297,13 +301,13 @@ class WorkflowApplication:
         product = self.repo.get_product(product_id); task = self.repo.get_task(product.task_id)
         if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改商品", 409)
         for key, value in changes.items(): setattr(product, key, clean(value) if isinstance(value, str) else value)
-        product.updated_at = now(); task.updated_at = now(); self.revalidate(task.id); self.audit(task.id, "product_updated", {"product_id": str(product_id)}); return self.workspace(task.id)
+        product.updated_at = now(); task.updated_at = now(); self.repo.update_product(product); self.repo.update_task(task); self.revalidate(task.id); self.audit(task.id, "product_updated", {"product_id": str(product_id)}); return self.workspace(task.id)
     @atomic
     def patch_sku(self, sku_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
         sku = self.repo.get_sku(sku_id); task = self.repo.get_task(self.product_task(sku.product_id))
         if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改 SKU", 409)
         for key, value in changes.items(): setattr(sku, key, clean(value) if isinstance(value, str) else value)
-        sku.updated_at = now(); task.updated_at = now(); self.revalidate(task.id); self.audit(task.id, "sku_updated", {"sku_id": str(sku_id)}); return self.workspace(task.id)
+        sku.updated_at = now(); task.updated_at = now(); self.repo.update_sku(sku); self.repo.update_task(task); self.revalidate(task.id); self.audit(task.id, "sku_updated", {"sku_id": str(sku_id)}); return self.workspace(task.id)
     @atomic
     def approve_products(self, task_id: UUID, comment: str | None) -> dict[str, Any]:
         task = self.repo.get_task(task_id)
