@@ -20,6 +20,7 @@ export interface TaskRepository {
   updateProduct(productId: string, changes: Partial<Pick<Product, 'product_name' | 'category' | 'material'>>): Promise<ApiResponse<TaskWorkspace>>;
   updateSku(skuId: string, changes: Partial<Pick<SKU, 'sku_code' | 'color' | 'size' | 'price' | 'stock'>>): Promise<ApiResponse<TaskWorkspace>>;
   approveProducts(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
+  applySafeFixes(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   generateCopy(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   approveCopy(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
   exportTask(taskId: string): Promise<ApiResponse<TaskWorkspace>>;
@@ -32,7 +33,7 @@ const failure = <T,>(code: string, message: string, status: 'failed' | 'needs_re
 
 function makeDemoWorkspace(): TaskWorkspace {
   const task: Task = { id: 'task-demo', task_name: '夏季基础款短袖上新', category: '服饰', status: 'WAITING_PRODUCT_REVIEW', creator_id: 'frontend-demo', created_at: now, updated_at: now };
-  const product: Product = { id: 'product-demo', task_id: task.id, product_name: '轻盈棉质短袖 T 恤', category: '服饰', material: '棉', source_row: 2, source_payload: {}, created_at: now, updated_at: now };
+  const product: Product = { id: 'product-demo', task_id: task.id, product_name: '  轻盈棉质短袖 T 恤  ', category: '服饰', material: '棉', source_row: 2, source_payload: {}, created_at: now, updated_at: now };
   const skuRows: Array<[string, string, string | null, string, number | null, number | null, number]> = [
     ['sku-1', 'TSHIRT-WHITE-S', '白色', 'S', 79, 12, 3], ['sku-2', 'TSHIRT-WHITE-M', '白色', 'M', 79, 18, 4],
     ['sku-3', 'TSHIRT-BLACK-L', '黑色', 'L', 79, 9, 5], ['sku-4', 'TSHIRT-WHITE-M', '白色', 'M', 79, 6, 6],
@@ -94,6 +95,17 @@ export function createMockTaskRepository(): TaskRepository {
       Object.assign(sku, changes); const codes = new Map<string, number>(); workspace.skus.forEach((item) => { if (item.sku_code) codes.set(item.sku_code, (codes.get(item.sku_code) ?? 0) + 1); });
       workspace.issues.forEach((issue) => { const target = workspace.skus.find((item) => item.id === issue.sku_id); if (issue.code === 'DUPLICATE_SKU') issue.resolved = !target?.sku_code || (codes.get(target.sku_code) ?? 0) < 2; if (issue.code === 'INVALID_PRICE') issue.resolved = typeof target?.price === 'number' && target.price > 0; if (issue.code === 'MISSING_COLOR') issue.resolved = Boolean(target?.color); if (issue.code === 'MISSING_STOCK') issue.resolved = typeof target?.stock === 'number'; });
       audit(workspace, 'sku_updated'); return success(workspace, unresolved(workspace));
+    },
+    async applySafeFixes(taskId) {
+      const workspace = find(taskId);
+      if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
+      if (workspace.task.status !== 'WAITING_PRODUCT_REVIEW') return failure('INVALID_TASK_STATE', '当前状态不能处理问题');
+      const normalizationIssues = workspace.issues.filter((issue) => !issue.resolved && issue.code === 'NORMALIZATION_NEEDED');
+      if (!normalizationIssues.length) return failure('NO_SAFE_FIX_AVAILABLE', '当前没有可安全处理的问题', 'needs_review', unresolved(workspace));
+      workspace.products.forEach((product) => { product.product_name = product.product_name?.trim().replace(/\s+/g, ' ') ?? null; });
+      normalizationIssues.forEach((issue) => { issue.resolved = true; });
+      audit(workspace, 'smart_fix_applied');
+      return success(workspace, unresolved(workspace));
     },
     async approveProducts(taskId) { const workspace = find(taskId); if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务'); const errors = unresolved(workspace).filter((issue) => issue.severity === 'error'); if (errors.length) return failure('UNRESOLVED_ERROR_ISSUES', '仍有错误级问题需要处理', 'needs_review', errors); if (workspace.task.status !== 'WAITING_PRODUCT_REVIEW') return failure('INVALID_TASK_STATE', '当前状态不能审核商品'); workspace.task.status = 'PRODUCT_APPROVED'; audit(workspace, 'products_approved'); return success(workspace); },
     async generateCopy(taskId) { const workspace = find(taskId); if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务'); if (workspace.task.status !== 'PRODUCT_APPROVED') return failure('INVALID_TASK_STATE', '请先完成商品审核'); workspace.generated_content = workspace.products.map((product) => ({ id: `content-${product.id}`, task_id: workspace.task.id, product_id: product.id, title: [product.product_name, product.category].filter(Boolean).join(' · '), selling_points: product.category ? [`类目：${product.category}`] : [], unsupported_claims: [], model_metadata: { provider: 'mock', model: 'deterministic-template-v1' }, created_at: new Date().toISOString() })); workspace.task.status = 'WAITING_COPY_REVIEW'; audit(workspace, 'copy_generation_completed'); return success(workspace); },

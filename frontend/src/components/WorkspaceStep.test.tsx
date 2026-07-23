@@ -13,4 +13,11 @@ describe('WorkspaceStep', () => {
     render(<WorkspaceStep status="FAILED" />);
     expect(screen.getByLabelText('任务流程').getAttribute('data-failed')).toBe('true');
   });
+
+  it('keeps every connector between workflow nodes instead of behind labels', () => {
+    render(<WorkspaceStep status="WAITING_PRODUCT_REVIEW" />);
+    const stepper = screen.getByLabelText('任务流程');
+    expect(stepper.querySelectorAll('[data-step-node]').length).toBe(6);
+    expect(stepper.querySelectorAll('[data-step-connector]').length).toBe(5);
+  });
 });

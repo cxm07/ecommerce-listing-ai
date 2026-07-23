@@ -10,6 +10,7 @@ const actionLabel: Record<string, string> = {
   copy_generation_completed: "生成了商品文案",
   copy_approved: "审核通过商品文案",
   export_created: "生成了导出文件",
+  smart_fix_applied: "应用了安全规范化处理",
 };
 
 export function auditActionLabel(action: string) {
@@ -32,20 +33,13 @@ export function AuditDetailPanel({ event }: { event: AuditLog | null }) {
       <dl>
         <div>
           <dt>执行来源</dt>
-          <dd>{event.actor_id ?? "系统"}</dd>
+          <dd>{event.actor_id === "system" || !event.actor_id ? "系统" : event.actor_id === "current-user" ? "当前用户" : event.actor_id}</dd>
         </div>
-        <div>
-          <dt>来源定位</dt>
-          <dd>
-            {event.source_ref
-              ? formatSourceRef(event.source_ref)
-              : "未提供来源字段"}
-          </dd>
-        </div>
+        {event.source_ref ? <div><dt>来源定位</dt><dd>{formatSourceRef(event.source_ref)}</dd></div> : null}
       </dl>
       <div className="audit-diff-empty">
         <b>字段变更</b>
-        <p>当前审计契约未提供修改前后字段快照。</p>
+        <p>此操作未产生字段修改。</p>
       </div>
     </aside>
   );

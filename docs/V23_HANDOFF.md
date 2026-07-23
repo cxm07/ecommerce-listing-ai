@@ -60,6 +60,14 @@ For every API change: agree contract → update fixtures → implement backend/t
 
 Stop for human decision if a new workflow state is proposed; roles or data ownership are unclear; a mapping requires guessed product facts; an export target requires platform credentials; a connector could mutate an external system; or a migration cannot preserve provenance/audit history.
 
+## Frontend contract requests from the second UI rework
+
+- **Safe AI fix:** the frontend can preview only deterministic normalization. A real execution button requires a documented `POST` endpoint, idempotency behavior, per-item success/failure results, recheck result, and immutable audit event; the current API-mode adapter deliberately does not call an undocumented route.
+- **Source file display:** `TaskFile` supplies filename and creation time but not byte size. Add a size field only through a contract PR if the post-upload card must show persisted file size.
+- **Replace or remove source file:** V1 provenance rules prohibit overwriting the original upload. Any replacement/delete UX needs an explicit immutable-version or archive contract, not a client-side workaround.
+- **Template selector:** V1 provides a fixed import template and no task-template binding. Dynamic template selection remains disabled until a stable list and selected-template field are introduced.
+- **Audit field diff:** current audit records have no before/after snapshot. The UI intentionally shows a neutral no-change state rather than fabricating a diff.
+
 ## Current implementation audit
 
 - **Repository:** V1 uses `MemoryRepository`; data is lost on process restart.

@@ -21,6 +21,8 @@ describe('authenticated application routes', () => {
     await user.click(screen.getByRole('button', { name: '使用演示身份登录' }));
 
     expect(await screen.findByTestId('product-review-page')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '审核商品通过' })).toBeNull();
+    expect(await screen.findByText('商品修正完成后，将由审核人员确认通过。')).toBeTruthy();
   });
 
   it('shows the signed-in user role and returns to login after logout', async () => {

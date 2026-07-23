@@ -44,4 +44,15 @@ describe('mock task repository', () => {
     });
     expect(result.data).not.toHaveProperty('task');
   });
+
+  it('applies only safe normalization fixes and records the operation', async () => {
+    const repository = createMockTaskRepository();
+
+    const result = await repository.applySafeFixes('task-demo');
+
+    expect(result.status).toBe('success');
+    expect(result.data?.issues.find((issue) => issue.code === 'NORMALIZATION_NEEDED')?.resolved).toBe(true);
+    expect(result.data?.audit_logs[0]?.action).toBe('smart_fix_applied');
+    expect(result.data?.skus.find((sku) => sku.id === 'sku-5')?.price).toBeNull();
+  });
 });
