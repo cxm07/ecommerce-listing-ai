@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
+from contextlib import contextmanager
 from copy import deepcopy
 from uuid import UUID, uuid4
 
@@ -91,6 +92,7 @@ class Repository(Protocol):
 
 
 class UnitOfWork(Protocol):
+    repository: Repository
     def __enter__(self) -> "UnitOfWork": ...
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool: ...
     def commit(self) -> None: ...
@@ -160,6 +162,10 @@ class MemoryRepository:
         if new_status is not None: task.status = new_status
         task.version += 1; task.updated_at = now(); return task.version
     def unit_of_work(self) -> MemoryUnitOfWork: return MemoryUnitOfWork(self)
+    @contextmanager
+    def read_repository(self):
+        """Memory mode has no connection to release, but follows the same factory API."""
+        yield self
 
 
 class LocalFileStorage:
@@ -221,54 +227,130 @@ class ExcelOutputAdapter:
 
 
 class WorkflowApplication:
-    def __init__(self, repo: MemoryRepository, storage: LocalFileStorage, actor_id: str, max_upload_bytes: int):
-        self.repo, self.storage, self.actor_id, self.max_upload_bytes = repo, storage, actor_id, max_upload_bytes
+    """Workflow orchestration using a repository factory for reads and a UoW for writes."""
+    def __init__(self, repository_factory: Any, storage: LocalFileStorage, actor_id: str, max_upload_bytes: int):
+        self.repository_factory, self.repo = repository_factory, repository_factory
+        self.storage, self.actor_id, self.max_upload_bytes = storage, actor_id, max_upload_bytes
         self.workflow, self.reader, self.writer = WorkflowService(), ExcelSourceAdapter(), ExcelOutputAdapter()
-    def audit(self, task_id: UUID, action: str, ref: dict[str, Any] | None = None) -> None:
-        log = AuditLog(uuid4(), task_id, self.actor_id, action, ref); self.repo.add_audit(log)
-    def list_tasks(self) -> list[Task]: return sorted(self.repo.list_tasks(), key=lambda item: item.updated_at, reverse=True)
-    def get_task(self, task_id: UUID) -> Task: return self.repo.get_task(task_id)
-    def transition(self, task: Task, target: TaskStatus, action: str) -> None:
-        task.status = self.workflow.transition(task.status, target); task.updated_at = now(); self.repo.update_task(task); self.audit(task.id, action)
-    @atomic
+
+    def audit(self, repo_or_task: Any, task_or_action: Any, action_or_ref: Any = None, ref: dict[str, Any] | None = None) -> None:
+        """Append an audit entry; legacy in-memory commands retain their existing call form."""
+        if hasattr(repo_or_task, "add_audit"):
+            repo, task_id, action = repo_or_task, task_or_action, action_or_ref
+        else:
+            repo, task_id, action, ref = self.repo, repo_or_task, task_or_action, action_or_ref
+        repo.add_audit(AuditLog(uuid4(), task_id, self.actor_id, action, ref))
+
+    def list_tasks(self) -> list[Task]:
+        with self.repository_factory.read_repository() as repo:
+            return sorted(repo.list_tasks(), key=lambda item: item.updated_at, reverse=True)
+
+    def get_task(self, task_id: UUID) -> Task:
+        with self.repository_factory.read_repository() as repo:
+            return repo.get_task(task_id)
+
+    def transition(self, repo_or_task: Any, task_or_target: Any, target_or_action: Any, action: str | None = None) -> None:
+        """Advance through WorkflowService and atomically compare-and-swap Task.version."""
+        if hasattr(repo_or_task, "advance_task"):
+            repo, task, target = repo_or_task, task_or_target, target_or_action
+        else:
+            repo, task, target, action = self.repo, repo_or_task, task_or_target, target_or_action
+        target = self.workflow.transition(task.status, target)
+        task.version = repo.advance_task(task.id, task.version, target)
+        task.status, task.updated_at = target, now()
+        self.audit(repo, task.id, action)
+
     def create_task(self, name: str, category: str) -> Task:
         name, category = clean(name), clean(category)
         if not name or not category: raise DomainError("INVALID_TASK", "任务名称和类目不能为空")
-        task = Task(uuid4(), name, category, self.actor_id); self.repo.add_task(task); self.audit(task.id, "task_created"); return task
-    @atomic
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            task = Task(uuid4(), name, category, self.actor_id)
+            repo.add_task(task)
+            self.audit(repo, task.id, "task_created")
+            uow.commit()
+            return task
+
     def upload(self, task_id: UUID, filename: str, payload: bytes) -> TaskFile:
-        task = self.repo.get_task(task_id)
-        if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
         if not filename.lower().endswith(".xlsx"): raise DomainError("INVALID_FILE_TYPE", "仅支持 .xlsx 文件")
         if len(payload) > self.max_upload_bytes: raise DomainError("FILE_TOO_LARGE", "文件超过大小限制")
-        if self.repo.list_task_files(task_id): raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
-        item = TaskFile(uuid4(), task_id, self.storage.save("source", payload), filename, "source"); self.repo.add_file(item)
-        self.transition(task, TaskStatus.UPLOADED, "source_uploaded"); return item
-    @atomic
+        storage_path = self.storage.save("source", payload)
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            task = repo.get_task(task_id)
+            if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
+            if repo.list_task_files(task_id): raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
+            item = TaskFile(uuid4(), task_id, storage_path, filename, "source")
+            repo.add_file(item)
+            self.transition(repo, task, TaskStatus.UPLOADED, "source_uploaded")
+            uow.commit()
+            return item
+
+    def _parse_records(self, task_id: UUID, source: TaskFile) -> tuple[list[Product], list[SKU], list[Issue]]:
+        rows = self.reader.parse(self.storage.read(source.storage_path))
+        groups: dict[tuple[str | None, str | None, str | None], Product] = {}
+        skus: list[SKU] = []
+        for record in rows:
+            raw = record["payload"]
+            key = (clean(raw["product_name"]), clean(raw["category"]), clean(raw["material"]))
+            product = groups.get(key)
+            if product is None:
+                product = Product(uuid4(), task_id, *key, record["row"], raw)
+                groups[key] = product
+            try: price = Decimal(str(raw["price"])) if raw["price"] not in (None, "") else None
+            except (InvalidOperation, ValueError): price = None
+            stock = raw["stock"] if isinstance(raw["stock"], int) and not isinstance(raw["stock"], bool) else None
+            skus.append(SKU(uuid4(), product.id, clean(raw["sku_code"]), clean(raw["color"]), clean(raw["size"]), price, stock, record["row"], raw))
+        issues = self._deterministic_issues(task_id, source, list(groups.values()), skus)
+        return list(groups.values()), skus, issues
+
+    def _deterministic_issues(self, task_id: UUID, source: TaskFile, products: list[Product], skus: list[SKU]) -> list[Issue]:
+        product_by_id = {product.id: product for product in products}; wanted: list[tuple[UUID, UUID, str, str, str, str, int]] = []
+        counts = defaultdict(int)
+        for sku in skus:
+            if sku.sku_code: counts[sku.sku_code] += 1
+        seen_codes: set[str] = set()
+        for sku in skus:
+            product = product_by_id[sku.product_id]
+            if sku.sku_code and counts[sku.sku_code] > 1 and sku.sku_code in seen_codes: wanted.append((product.id, sku.id, "DUPLICATE_SKU", "sku_code", "error", f"SKU 编码 {sku.sku_code} 重复", sku.source_row))
+            if sku.sku_code: seen_codes.add(sku.sku_code)
+            if not sku.color: wanted.append((product.id, sku.id, "MISSING_COLOR", "color", "warning", "颜色缺失，需要人工确认", sku.source_row))
+            if sku.source_payload.get("price") not in (None, "") and sku.price is None: wanted.append((product.id, sku.id, "INVALID_PRICE", "price", "error", "价格格式无效", sku.source_row))
+            if sku.stock is None: wanted.append((product.id, sku.id, "MISSING_STOCK", "stock", "warning", "库存缺失，需要人工确认", sku.source_row))
+            if clean(sku.source_payload.get("product_name")) != sku.source_payload.get("product_name"):
+                wanted.append((product.id, sku.id, "NORMALIZATION_NEEDED", "product_name", "info", "商品名称已进行空白标准化", sku.source_row))
+        issues: list[Issue] = []
+        for product_id, sku_id, code, field_name, severity, message, row in wanted:
+            signature = f"{code}:{product_id}:{sku_id}:{field_name}:{row}"
+            ref = {"file_id": str(source.id), "file_name": source.original_filename, "template": "mvp-products-v1", "sheet": "Products", "row": row, "field": field_name}
+            issues.append(Issue(uuid4(), task_id, product_id, sku_id, code, field_name, severity, message, ref, signature))
+        return issues
+
     def parse(self, task_id: UUID) -> dict[str, int]:
-        task = self.repo.get_task(task_id)
-        if task.status != TaskStatus.UPLOADED: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能解析", 409)
-        source = next((item for item in self.repo.list_task_files(task_id) if item.file_kind == "source"), None)
-        if not source: raise DomainError("SOURCE_NOT_FOUND", "未找到原始文件", 404)
-        self.transition(task, TaskStatus.PARSING, "parsing_started")
-        try:
-            rows = self.reader.parse(self.storage.read(source.storage_path)); groups: dict[tuple[str | None, str | None, str | None], Product] = {}
-            for record in rows:
-                raw = record["payload"]; key = (clean(raw["product_name"]), clean(raw["category"]), clean(raw["material"]))
-                product = groups.get(key)
-                if product is None:
-                    product = Product(uuid4(), task_id, *key, record["row"], raw); groups[key] = product; self.repo.add_product(product)
-                try: price = Decimal(str(raw["price"])) if raw["price"] not in (None, "") else None
-                except (InvalidOperation, ValueError): price = None
-                stock = raw["stock"] if isinstance(raw["stock"], int) and not isinstance(raw["stock"], bool) else None
-                sku = SKU(uuid4(), product.id, clean(raw["sku_code"]), clean(raw["color"]), clean(raw["size"]), price, stock, record["row"], raw); self.repo.add_sku(sku)
-            self.revalidate(task_id, source); self.transition(task, TaskStatus.WAITING_PRODUCT_REVIEW, "parsing_completed")
-        except DomainError:
-            self.transition(task, TaskStatus.FAILED, "parsing_failed"); raise
-        issues = self.repo.list_issues(task_id); counts = defaultdict(int)
-        for issue in issues:
-            if not issue.resolved: counts[issue.severity] += 1
-        return {"product_count": len(self.repo.list_products(task_id)), "sku_count": len(self.repo.list_skus(task_id)), "issue_count": sum(counts.values()), "error_count": counts["error"], "warning_count": counts["warning"], "info_count": counts["info"]}
+        with self.repository_factory.read_repository() as repo:
+            task = repo.get_task(task_id)
+            if task.status != TaskStatus.UPLOADED: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能解析", 409)
+            source = next((item for item in repo.list_task_files(task_id) if item.file_kind == "source"), None)
+        if source is None: raise DomainError("SOURCE_NOT_FOUND", "未找到原始文件", 404)
+        products, skus, issues = self._parse_records(task_id, source)
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            current = repo.get_task(task_id)
+            if current.status != TaskStatus.UPLOADED: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能解析", 409)
+            for product in products: repo.add_product(product)
+            for sku in skus: repo.add_sku(sku)
+            for issue in issues: repo.add_issue(issue)
+            # Validate both existing state-machine edges without persisting the
+            # transient PARSING state in a separately observable transaction.
+            parsing_status = self.workflow.transition(current.status, TaskStatus.PARSING)
+            target = self.workflow.transition(parsing_status, TaskStatus.WAITING_PRODUCT_REVIEW)
+            current.version = repo.advance_task(current.id, current.version, target)
+            current.status, current.updated_at = target, now()
+            self.audit(repo, current.id, "parsing_completed")
+            uow.commit()
+        counts = defaultdict(int)
+        for issue in issues: counts[issue.severity] += 1
+        return {"product_count": len(products), "sku_count": len(skus), "issue_count": len(issues), "error_count": counts["error"], "warning_count": counts["warning"], "info_count": counts["info"]}
     def product_task(self, product_id: UUID) -> UUID: return self.repo.get_product(product_id).task_id
     def revalidate(self, task_id: UUID, source: TaskFile | None = None) -> None:
         source = source or next(item for item in self.repo.list_task_files(task_id) if item.file_kind == "source")
@@ -300,8 +382,9 @@ class WorkflowApplication:
         for issue in self.repo.list_issues(task_id):
             if issue.signature not in signatures: issue.resolved = True; self.repo.update_issue(issue)
     def workspace(self, task_id: UUID) -> dict[str, Any]:
-        task = self.repo.get_task(task_id); products = self.repo.list_products(task_id); skus = self.repo.list_skus(task_id)
-        return json_value({"task": asdict(task), "files": [asdict(x) for x in self.repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in self.repo.list_issues(task_id)], "generated_content": [asdict(x) for x in self.repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in self.repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(self.repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
+        with self.repository_factory.read_repository() as repo:
+            task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
+            return json_value({"task": asdict(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
     @atomic
     def patch_product(self, product_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
         product = self.repo.get_product(product_id); task = self.repo.get_task(product.task_id)

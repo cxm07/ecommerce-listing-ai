@@ -91,18 +91,18 @@ class PostgresRepository:
 
     def add_task(self, item: Task) -> None:
         try:
-            self._cursor().execute("""insert into public.tasks (id, task_name, category, status, creator_id, created_at, updated_at)
-                values (%s,%s,%s,%s,%s,%s,%s)""", (item.id, item.task_name, item.category, item.status.value, UUID(item.creator_id), item.created_at, item.updated_at))
+            self._cursor().execute("""insert into public.tasks (id, task_name, category, status, creator_id, version, created_at, updated_at)
+                values (%s,%s,%s,%s,%s,%s,%s,%s)""", (item.id, item.task_name, item.category, item.status.value, UUID(item.creator_id), item.version, item.created_at, item.updated_at))
         except UniqueViolation as exc:
             raise DomainError("DUPLICATE_RECORD", "记录已存在", 409) from exc
 
     def get_task(self, task_id: UUID) -> Task:
-        row = self._cursor().execute("select id, task_name, category, status, creator_id, created_at, updated_at from public.tasks where id=%s and archived_at is null", (task_id,)).fetchone()
+        row = self._cursor().execute("select id, task_name, category, status, creator_id, version, created_at, updated_at from public.tasks where id=%s and archived_at is null", (task_id,)).fetchone()
         if row is None: raise DomainError("TASK_NOT_FOUND", "未找到任务", 404)
         return self._task(row)
 
     def list_tasks(self) -> list[Task]:
-        rows = self._cursor().execute("select id, task_name, category, status, creator_id, created_at, updated_at from public.tasks where archived_at is null order by updated_at desc").fetchall()
+        rows = self._cursor().execute("select id, task_name, category, status, creator_id, version, created_at, updated_at from public.tasks where archived_at is null order by updated_at desc").fetchall()
         return [self._task(row) for row in rows]
 
     def update_task_status(self, task_id: UUID, expected_version: int, status: TaskStatus) -> int:
@@ -188,6 +188,8 @@ class PostgresRepositoryFactory:
         try:
             connection.row_factory = dict_row
             yield PostgresRepository(connection, self.actor_id)
-            connection.rollback()
         finally:
-            self.pool.putconn(connection)
+            try:
+                connection.rollback()
+            finally:
+                self.pool.putconn(connection)
