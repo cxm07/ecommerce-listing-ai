@@ -20,6 +20,10 @@ import { filterTasks } from "./components/TaskFilters";
 import { UploadCard } from "./components/UploadCard";
 import { IssueSummary } from "./components/IssueSummary";
 import { SmartFixPreview } from "./components/SmartFixPreview";
+import {
+  auditActionLabel,
+  AuditDetailPanel,
+} from "./components/AuditDetailPanel";
 
 const demoId = "task-demo";
 const isApiMode = import.meta.env.VITE_DATA_SOURCE === "api";
@@ -691,7 +695,12 @@ export function ExportPage() {
 
 export function AuditPage() {
   const { workspace } = useWorkspace();
+  const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
   if (!workspace) return <LoadingPage />;
+  const selectedAudit =
+    workspace.audit_logs.find((event) => event.id === selectedAuditId) ??
+    workspace.audit_logs[0] ??
+    null;
   return (
     <Shell eyebrow="审核记录" title="每一次决策都可追溯">
       <section className="panel audit-card">
@@ -707,20 +716,29 @@ export function AuditPage() {
             返回审核工作台 →
           </Link>
         </div>
-        <div className="timeline">
-          {workspace.audit_logs.map((event) => (
-            <article key={event.id}>
-              <i></i>
-              <div>
-                <small>
-                  {formatTime(event.created_at)} ·{" "}
-                  {formatSourceRef(event.source_ref)}
-                </small>
-                <h3>{event.action}</h3>
-              </div>
-              <b>{event.actor_id ?? "系统"}</b>
-            </article>
-          ))}
+        <div className="audit-workbench">
+          <div className="timeline">
+            {workspace.audit_logs.map((event) => (
+              <article
+                aria-pressed={selectedAudit?.id === event.id}
+                key={event.id}
+                onClick={() => setSelectedAuditId(event.id)}
+                role="button"
+                tabIndex={0}
+              >
+                <i></i>
+                <div>
+                  <small>
+                    {formatTime(event.created_at)} ·{" "}
+                    {formatSourceRef(event.source_ref)}
+                  </small>
+                  <h3>{auditActionLabel(event.action)}</h3>
+                </div>
+                <b>{event.actor_id ?? "系统"}</b>
+              </article>
+            ))}
+          </div>
+          <AuditDetailPanel event={selectedAudit} />
         </div>
       </section>
     </Shell>
