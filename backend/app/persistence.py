@@ -6,6 +6,7 @@ of PostgREST calls.  It is not constructed at module import time.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -109,6 +110,11 @@ class PostgresRepository:
             where id=%s and version=%s and archived_at is null returning version""", (status.value, task_id, expected_version)).fetchone()
         if row is None: raise DomainError("CONCURRENT_MODIFICATION", "任务已被其他请求修改，请刷新后重试", 409)
         return int(row["version"])
+    def advance_task(self, task_id: UUID, expected_version: int, new_status: TaskStatus | None = None) -> int:
+        row = self._cursor().execute("""update public.tasks set status=coalesce(%s,status), version=version+1, updated_at=now()
+            where id=%s and version=%s and archived_at is null returning version""", (new_status.value if new_status else None, task_id, expected_version)).fetchone()
+        if row is None: raise DomainError("CONCURRENT_MODIFICATION", "任务已被其他请求修改，请刷新后重试", 409)
+        return int(row["version"])
 
     def _actor(self) -> UUID:
         """The V2 static actor is validated against profiles by PostgreSQL FK."""
@@ -176,3 +182,12 @@ class PostgresRepositoryFactory:
     def open(self) -> None: self.pool.open(wait=True)
     def close(self) -> None: self.pool.close()
     def unit_of_work(self) -> PostgresUnitOfWork: return PostgresUnitOfWork(self.pool, self.actor_id)
+    @contextmanager
+    def read_repository(self):
+        connection = self.pool.getconn()
+        try:
+            connection.row_factory = dict_row
+            yield PostgresRepository(connection, self.actor_id)
+            connection.rollback()
+        finally:
+            self.pool.putconn(connection)

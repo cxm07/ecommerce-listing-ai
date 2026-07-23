@@ -154,6 +154,11 @@ class MemoryRepository:
     def update_product(self, item: Product) -> None: self._products[item.id] = item
     def update_sku(self, item: SKU) -> None: self._skus[item.id] = item
     def update_issue(self, item: Issue) -> None: self._issues[item.id] = item
+    def advance_task(self, task_id: UUID, expected_version: int, new_status: TaskStatus | None = None) -> int:
+        task = self.get_task(task_id)
+        if task.version != expected_version: raise DomainError("CONCURRENT_MODIFICATION", "任务已被其他请求修改", 409)
+        if new_status is not None: task.status = new_status
+        task.version += 1; task.updated_at = now(); return task.version
     def unit_of_work(self) -> MemoryUnitOfWork: return MemoryUnitOfWork(self)
 
 
