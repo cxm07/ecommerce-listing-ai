@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
+import './auth.css';
 
 function safeReturnTo(value: string | null) {
   return value && value.startsWith('/') && !value.startsWith('//') ? value : '/tasks';
