@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     supabase_db_url: str | None = Field(default=None, validation_alias="SUPABASE_DB_URL")
     postgres_pool_min_size: int = Field(default=1, validation_alias="POSTGRES_POOL_MIN_SIZE")
     postgres_pool_max_size: int = Field(default=5, validation_alias="POSTGRES_POOL_MAX_SIZE")
+    file_storage: str = Field(default="local", validation_alias="FILE_STORAGE")
+    supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
+    supabase_service_role_key: str | None = Field(default=None, validation_alias="SUPABASE_SERVICE_ROLE_KEY")
+    supabase_storage_bucket: str = Field(default="task-files", validation_alias="SUPABASE_STORAGE_BUCKET")
 
     @field_validator("cors_origins", mode="before")
     @classmethod
