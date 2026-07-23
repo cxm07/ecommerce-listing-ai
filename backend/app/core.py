@@ -46,6 +46,7 @@ class DomainError(Exception):
 class Task:
     id: UUID; task_name: str; category: str; creator_id: str; status: TaskStatus = TaskStatus.DRAFT
     created_at: str = field(default_factory=now); updated_at: str = field(default_factory=now)
+    version: int = 1
 
 @dataclass
 class TaskFile:

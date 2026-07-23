@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 
 from app.config import Settings, settings
 from app.core import DomainError, LocalFileStorage, MemoryRepository, WorkflowApplication, json_value
-from app.persistence import PostgresRepository, StaticActorProvider
+from app.persistence import PostgresRepositoryFactory, StaticActorProvider
 from app.models import ApprovalRequest, ApiError, ApiResponse, CreateTaskRequest, PatchProductRequest, PatchSkuRequest
 
 
@@ -29,16 +29,16 @@ def create_app(app_settings: Settings = settings, service: WorkflowApplication |
     if service is None:
         if app_settings.data_repository == "postgres":
             actor = StaticActorProvider(UUID(app_settings.demo_actor_id), app_settings.app_env).current()
-            repository = PostgresRepository(app_settings.supabase_db_url or "", actor.actor_id, app_settings.postgres_pool_min_size, app_settings.postgres_pool_max_size)
+            repository = PostgresRepositoryFactory(app_settings.supabase_db_url or "", actor.actor_id, app_settings.postgres_pool_min_size, app_settings.postgres_pool_max_size)
         else:
             repository = MemoryRepository()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        if isinstance(repository, PostgresRepository): repository.open()
+        if isinstance(repository, PostgresRepositoryFactory): repository.open()
         try: yield
         finally:
-            if isinstance(repository, PostgresRepository): repository.close()
+            if isinstance(repository, PostgresRepositoryFactory): repository.close()
 
     app = FastAPI(title="ecommerce-listing-ai", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=app_settings.cors_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])

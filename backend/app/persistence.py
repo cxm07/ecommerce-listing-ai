@@ -5,7 +5,6 @@ of PostgREST calls.  It is not constructed at module import time.
 """
 from __future__ import annotations
 
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -39,19 +38,18 @@ class StaticActorProvider:
 
 
 class PostgresUnitOfWork:
-    def __init__(self, repository: "PostgresRepository") -> None:
-        self.repository = repository
+    def __init__(self, pool: ConnectionPool, actor_id: UUID) -> None:
+        self.pool, self.actor_id = pool, actor_id
+        self.repository: PostgresRepository | None = None
         self.connection: Connection[dict[str, Any]] | None = None
         self.committed = False
         self.closed = False
 
     def __enter__(self) -> "PostgresUnitOfWork":
-        if self.repository._active.get() is not None:
-            raise DomainError("TRANSACTION_FAILED", "不支持嵌套数据库事务", 500)
         try:
-            self.connection = self.repository.pool.getconn()
+            self.connection = self.pool.getconn()
             self.connection.row_factory = dict_row
-            self.repository._active.set(self)
+            self.repository = PostgresRepository(self.connection, self.actor_id)
             return self
         except Exception as exc:
             raise DomainError("REPOSITORY_UNAVAILABLE", "持久化服务当前不可用", 503) from exc
@@ -68,39 +66,27 @@ class PostgresUnitOfWork:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
         connection = self.connection
-        self.repository._active.set(None)
         if connection is not None:
             try:
                 if not self.committed:
                     connection.rollback()
             finally:
                 self.closed = True
-                self.repository.pool.putconn(connection)
+                self.pool.putconn(connection)
         return False
 
 
 class PostgresRepository:
     """Minimal persistent task boundary; expanded aggregate mappers belong here."""
-    def __init__(self, database_url: str, actor_id: UUID, min_size: int = 1, max_size: int = 5) -> None:
-        if not database_url:
-            raise DomainError("INVALID_REPOSITORY_CONFIG", "SUPABASE_DB_URL 未配置", 500)
-        self.pool = ConnectionPool(conninfo=database_url, min_size=min_size, max_size=max_size, open=False)
-        self._active: ContextVar[PostgresUnitOfWork | None] = ContextVar("postgres_uow", default=None)
-        self.actor_id = actor_id
-
-    def open(self) -> None: self.pool.open(wait=True)
-    def close(self) -> None: self.pool.close()
-    def unit_of_work(self) -> PostgresUnitOfWork: return PostgresUnitOfWork(self)
+    def __init__(self, connection: Connection[dict[str, Any]], actor_id: UUID) -> None:
+        self.connection, self.actor_id = connection, actor_id
 
     def _cursor(self):
-        active = self._active.get()
-        if active is None:
-            raise DomainError("TRANSACTION_FAILED", "Repository 操作必须在事务中执行", 500)
-        return active.cursor()
+        return self.connection.cursor()
 
     @staticmethod
     def _task(row: dict[str, Any]) -> Task:
-        return Task(id=row["id"], task_name=row["task_name"], category=row["category"], creator_id=str(row["creator_id"]), status=TaskStatus(row["status"]), created_at=row["created_at"].astimezone(UTC).isoformat().replace("+00:00", "Z"), updated_at=row["updated_at"].astimezone(UTC).isoformat().replace("+00:00", "Z"))
+        return Task(id=row["id"], task_name=row["task_name"], category=row["category"], creator_id=str(row["creator_id"]), status=TaskStatus(row["status"]), created_at=row["created_at"].astimezone(UTC).isoformat().replace("+00:00", "Z"), updated_at=row["updated_at"].astimezone(UTC).isoformat().replace("+00:00", "Z"), version=row["version"])
 
     def add_task(self, item: Task) -> None:
         try:
@@ -181,3 +167,12 @@ class PostgresRepository:
     def update_product(self, x: Product) -> None: self._cursor().execute("update public.products set product_name=%s,category=%s,material=%s,updated_at=%s,updated_by=%s where id=%s",(x.product_name,x.category,x.material,x.updated_at,self._actor(),x.id))
     def update_sku(self, x: SKU) -> None: self._cursor().execute("update public.skus set sku_code=%s,color=%s,size=%s,price=%s,stock=%s,updated_at=%s,updated_by=%s where id=%s",(x.sku_code,x.color,x.size,x.price,x.stock,x.updated_at,self._actor(),x.id))
     def update_issue(self, x: Issue) -> None: self._cursor().execute("update public.issues set resolved=%s,resolved_at=case when %s then now() else null end,resolved_by=case when %s then %s else null end where id=%s",(x.resolved,x.resolved,x.resolved,self._actor(),x.id))
+
+
+class PostgresRepositoryFactory:
+    def __init__(self, database_url: str, actor_id: UUID, min_size: int = 1, max_size: int = 5) -> None:
+        if not database_url: raise DomainError("INVALID_REPOSITORY_CONFIG", "SUPABASE_DB_URL 未配置", 500)
+        self.pool = ConnectionPool(conninfo=database_url, min_size=min_size, max_size=max_size, open=False); self.actor_id = actor_id
+    def open(self) -> None: self.pool.open(wait=True)
+    def close(self) -> None: self.pool.close()
+    def unit_of_work(self) -> PostgresUnitOfWork: return PostgresUnitOfWork(self.pool, self.actor_id)
