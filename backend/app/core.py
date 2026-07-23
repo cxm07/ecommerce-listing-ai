@@ -256,9 +256,15 @@ class WorkflowApplication:
         else:
             repo, task, target, action = self.repo, repo_or_task, task_or_target, target_or_action
         target = self.workflow.transition(task.status, target)
-        task.version = repo.advance_task(task.id, task.version, target)
-        task.status, task.updated_at = target, now()
+        self.advance_task(repo, task, target)
         self.audit(repo, task.id, action)
+
+    @staticmethod
+    def advance_task(repo: Any, task: Task, new_status: TaskStatus | None = None) -> int:
+        task.version = repo.advance_task(task.id, task.version, new_status)
+        if new_status is not None: task.status = new_status
+        task.updated_at = now()
+        return task.version
 
     def create_task(self, name: str, category: str) -> Task:
         name, category = clean(name), clean(category)
@@ -330,8 +336,7 @@ class WorkflowApplication:
         """Validate the two V1 parse edges, then persist only the final state once."""
         parsing_status = self.workflow.transition(task.status, TaskStatus.PARSING)
         target = self.workflow.transition(parsing_status, TaskStatus.WAITING_PRODUCT_REVIEW)
-        task.version = repo.advance_task(task.id, task.version, target)
-        task.status, task.updated_at = target, now()
+        self.advance_task(repo, task, target)
         return target
 
     def parse(self, task_id: UUID) -> dict[str, int]:
@@ -354,59 +359,102 @@ class WorkflowApplication:
         counts = defaultdict(int)
         for issue in issues: counts[issue.severity] += 1
         return {"product_count": len(products), "sku_count": len(skus), "issue_count": len(issues), "error_count": counts["error"], "warning_count": counts["warning"], "info_count": counts["info"]}
-    def product_task(self, product_id: UUID) -> UUID: return self.repo.get_product(product_id).task_id
-    def revalidate(self, task_id: UUID, source: TaskFile | None = None) -> None:
-        source = source or next(item for item in self.repo.list_task_files(task_id) if item.file_kind == "source")
-        products = self.repo.list_products(task_id); skus = self.repo.list_skus(task_id)
-        wanted: list[tuple[UUID, UUID, str, str, str, str, int]] = []
-        counts = defaultdict(int)
-        for sku in skus:
-            if sku.sku_code: counts[sku.sku_code] += 1
-        seen_codes: set[str] = set()
-        for sku in skus:
-            product = self.repo.get_product(sku.product_id)
-            if sku.sku_code and counts[sku.sku_code] > 1 and sku.sku_code in seen_codes: wanted.append((product.id, sku.id, "DUPLICATE_SKU", "sku_code", "error", f"SKU 编码 {sku.sku_code} 重复", sku.source_row))
-            if sku.sku_code: seen_codes.add(sku.sku_code)
-            if not sku.color: wanted.append((product.id, sku.id, "MISSING_COLOR", "color", "warning", "颜色缺失，需要人工确认", sku.source_row))
-            if sku.source_payload.get("price") not in (None, "") and sku.price is None: wanted.append((product.id, sku.id, "INVALID_PRICE", "price", "error", "价格格式无效", sku.source_row))
-            if sku.stock is None: wanted.append((product.id, sku.id, "MISSING_STOCK", "stock", "warning", "库存缺失，需要人工确认", sku.source_row))
-        for sku in skus:
-            product = self.repo.get_product(sku.product_id)
-            raw_name = sku.source_payload.get("product_name")
-            if clean(raw_name) != raw_name:
-                wanted.append((product.id, sku.id, "NORMALIZATION_NEEDED", "product_name", "info", "商品名称已进行空白标准化", sku.source_row))
-        signatures = set()
-        for product_id, sku_id, code, field_name, severity, message, row in wanted:
-            signature = f"{code}:{product_id}:{sku_id if sku_id.int else ''}:{field_name}:{row}"; signatures.add(signature)
-            existing = self.repo.find_issue(signature)
-            if existing: existing.resolved = False; self.repo.update_issue(existing); continue
-            ref = {"file_id": str(source.id), "file_name": source.original_filename, "template": "mvp-products-v1", "sheet": "Products", "row": row, "field": field_name}
-            issue = Issue(uuid4(), task_id, product_id, sku_id if sku_id.int else None, code, field_name, severity, message, ref, signature); self.repo.add_issue(issue)
-        for issue in self.repo.list_issues(task_id):
-            if issue.signature not in signatures: issue.resolved = True; self.repo.update_issue(issue)
+    def reconcile_issues(self, repo: Any, task_id: UUID, source: TaskFile, products: list[Product], skus: list[SKU]) -> None:
+        """Persist the deterministic issue set inside the caller's existing UoW."""
+        expected = self._deterministic_issues(task_id, source, products, skus)
+        signatures = {issue.signature for issue in expected}
+        for issue in expected:
+            existing = repo.find_issue(issue.signature)
+            if existing is None:
+                repo.add_issue(issue)
+            elif existing.resolved:
+                existing.resolved = False
+                repo.update_issue(existing)
+        for issue in repo.list_issues(task_id):
+            if issue.signature not in signatures and not issue.resolved:
+                issue.resolved = True
+                repo.update_issue(issue)
+
+    @staticmethod
+    def _source_file(repo: Any, task_id: UUID) -> TaskFile:
+        source = next((item for item in repo.list_task_files(task_id) if item.file_kind == "source"), None)
+        if source is None: raise DomainError("SOURCE_NOT_FOUND", "未找到原始文件", 404)
+        return source
+
+    @staticmethod
+    def _apply_product_changes(product: Product, changes: dict[str, Any]) -> None:
+        allowed = {"product_name", "category", "material"}
+        unknown = set(changes) - allowed
+        if unknown: raise DomainError("INVALID_PRODUCT_FIELD", "不支持修改该商品字段", 400, {"fields": sorted(unknown)})
+        for key, value in changes.items():
+            if value is not None and not isinstance(value, str): raise DomainError("INVALID_PRODUCT_VALUE", "商品字段必须为字符串或空值", 400)
+            setattr(product, key, clean(value))
+        product.updated_at = now()
+
+    @staticmethod
+    def _apply_sku_changes(sku: SKU, changes: dict[str, Any]) -> None:
+        allowed = {"sku_code", "color", "size", "price", "stock"}
+        unknown = set(changes) - allowed
+        if unknown: raise DomainError("INVALID_SKU_FIELD", "不支持修改该 SKU 字段", 400, {"fields": sorted(unknown)})
+        for key in ("sku_code", "color", "size"):
+            if key in changes:
+                value = changes[key]
+                if value is not None and not isinstance(value, str): raise DomainError("INVALID_SKU_VALUE", "SKU 文本字段必须为字符串或空值", 400)
+                setattr(sku, key, clean(value))
+        if "price" in changes:
+            value = changes["price"]
+            if value is None: sku.price = None
+            elif isinstance(value, bool): raise DomainError("INVALID_PRICE", "价格必须是有效数字", 400)
+            else:
+                try: sku.price = Decimal(str(value))
+                except (InvalidOperation, ValueError) as exc: raise DomainError("INVALID_PRICE", "价格必须是有效数字", 400) from exc
+        if "stock" in changes:
+            value = changes["stock"]
+            if value is None: sku.stock = None
+            elif isinstance(value, bool) or not isinstance(value, int): raise DomainError("INVALID_STOCK", "库存必须是整数或空值", 400)
+            else: sku.stock = value
+        sku.updated_at = now()
     def workspace(self, task_id: UUID) -> dict[str, Any]:
         with self.repository_factory.read_repository() as repo:
             task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
             return json_value({"task": asdict(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
-    @atomic
     def patch_product(self, product_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
-        product = self.repo.get_product(product_id); task = self.repo.get_task(product.task_id)
-        if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改商品", 409)
-        for key, value in changes.items(): setattr(product, key, clean(value) if isinstance(value, str) else value)
-        product.updated_at = now(); task.updated_at = now(); self.repo.update_product(product); self.repo.update_task(task); self.revalidate(task.id); self.audit(task.id, "product_updated", {"product_id": str(product_id)}); return self.workspace(task.id)
-    @atomic
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            product = repo.get_product(product_id); task = repo.get_task(product.task_id)
+            if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改商品", 409)
+            self._apply_product_changes(product, changes)
+            repo.update_product(product)
+            self.reconcile_issues(repo, task.id, self._source_file(repo, task.id), repo.list_products(task.id), repo.list_skus(task.id))
+            self.advance_task(repo, task)
+            self.audit(repo, task.id, "product_updated", {"product_id": str(product_id)})
+            uow.commit()
+        return self.workspace(task.id)
+
     def patch_sku(self, sku_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
-        sku = self.repo.get_sku(sku_id); task = self.repo.get_task(self.product_task(sku.product_id))
-        if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改 SKU", 409)
-        for key, value in changes.items(): setattr(sku, key, clean(value) if isinstance(value, str) else value)
-        sku.updated_at = now(); task.updated_at = now(); self.repo.update_sku(sku); self.repo.update_task(task); self.revalidate(task.id); self.audit(task.id, "sku_updated", {"sku_id": str(sku_id)}); return self.workspace(task.id)
-    @atomic
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            sku = repo.get_sku(sku_id); product = repo.get_product(sku.product_id); task = repo.get_task(product.task_id)
+            if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能修改 SKU", 409)
+            self._apply_sku_changes(sku, changes)
+            repo.update_sku(sku)
+            self.reconcile_issues(repo, task.id, self._source_file(repo, task.id), repo.list_products(task.id), repo.list_skus(task.id))
+            self.advance_task(repo, task)
+            self.audit(repo, task.id, "sku_updated", {"sku_id": str(sku_id)})
+            uow.commit()
+        return self.workspace(task.id)
+
     def approve_products(self, task_id: UUID, comment: str | None) -> dict[str, Any]:
-        task = self.repo.get_task(task_id)
-        if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能审核商品", 409)
-        blocking = [asdict(i) for i in self.repo.list_issues(task_id) if not i.resolved and i.severity == "error"]
-        if blocking: raise DomainError("UNRESOLVED_ERROR_ISSUES", "仍有错误级问题需要处理", 409, {"issues": json_value(blocking)})
-        approval = Approval(uuid4(), task_id, self.actor_id, "product", "approved", comment); self.repo.add_approval(approval); self.transition(task, TaskStatus.PRODUCT_APPROVED, "products_approved"); return self.workspace(task_id)
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository
+            task = repo.get_task(task_id)
+            if task.status != TaskStatus.WAITING_PRODUCT_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能审核商品", 409)
+            blocking = [asdict(issue) for issue in repo.list_issues(task_id) if not issue.resolved and issue.severity == "error"]
+            if blocking: raise DomainError("UNRESOLVED_ERROR_ISSUES", "仍有错误级问题需要处理", 409, {"issues": json_value(blocking)})
+            repo.add_approval(Approval(uuid4(), task_id, self.actor_id, "product", "approved", comment))
+            self.transition(repo, task, TaskStatus.PRODUCT_APPROVED, "products_approved")
+            uow.commit()
+        return self.workspace(task_id)
     @atomic
     def generate_copy(self, task_id: UUID) -> dict[str, Any]:
         task = self.repo.get_task(task_id)

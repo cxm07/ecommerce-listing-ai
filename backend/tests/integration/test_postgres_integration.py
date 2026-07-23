@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -94,20 +95,12 @@ def test_postgres_upload_rolls_back_when_audit_fails(workflow: WorkflowApplicati
 
 
 class _ConflictingWorkflow(WorkflowApplication):
-    def transition(self, repo_or_task, task_or_target, target_or_action, action=None) -> None:
-        task = task_or_target if hasattr(repo_or_task, "advance_task") else repo_or_task
+    def advance_task(self, repo, task, new_status=None) -> int:
         with self.repository_factory.unit_of_work() as competing:
             assert competing.repository is not None
             competing.repository.advance_task(task.id, task.version)
             competing.commit()
-        super().transition(repo_or_task, task_or_target, target_or_action, action)
-
-    def advance_parsed_task(self, repo, task) -> TaskStatus:
-        with self.repository_factory.unit_of_work() as competing:
-            assert competing.repository is not None
-            competing.repository.advance_task(task.id, task.version)
-            competing.commit()
-        return super().advance_parsed_task(repo, task)
+        return super().advance_task(repo, task, new_status)
 
 
 @pytest.mark.postgres_integration
@@ -174,3 +167,152 @@ def test_postgres_read_repository_supports_list_get_and_workspace(workflow: Work
         assert [item.id for item in repo.list_tasks() if item.id == task.id] == [task.id]
         assert repo.get_task(task.id).id == task.id
     assert workflow.workspace(task.id)["task"]["id"] == str(task.id)
+
+
+def _review_ready(workflow: WorkflowApplication, sample_workbook: bytes):
+    task = workflow.create_task("Review", "test")
+    workflow.upload(task.id, "sample-products.xlsx", sample_workbook)
+    workflow.parse(task.id)
+    return task, workflow.workspace(task.id)
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_product_updates_issues_version_and_audit(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    product_id = workspace["products"][0]["id"]
+    updated = workflow.patch_product(UUID(product_id), {"material": "combed cotton"})
+    assert updated["task"]["version"] == 4
+    assert updated["products"][0]["material"] == "combed cotton"
+    assert any(item["action"] == "product_updated" for item in updated["audit_logs"])
+    rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
+    assert rebuilt.workspace(task.id)["products"][0]["material"] == "combed cotton"
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_product_rolls_back_when_audit_fails(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    product_id = workspace["products"][0]["id"]
+    monkeypatch.setattr(workflow, "audit", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failure")))
+    with pytest.raises(RuntimeError, match="audit failure"):
+        workflow.patch_product(UUID(product_id), {"material": "new material"})
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_product(product_id).material != "new material"
+        assert repo.get_task(task.id).version == 3
+        assert not any(item.action == "product_updated" for item in repo.list_audit_logs(task.id))
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_product_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
+    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    task, workspace = _review_ready(normal, sample_workbook)
+    conflicting = _ConflictingWorkflow(postgres_factory, normal.storage, normal.actor_id, normal.max_upload_bytes)
+    with pytest.raises(DomainError, match="其他请求"):
+        conflicting.patch_product(UUID(workspace["products"][0]["id"]), {"material": "new material"})
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 4
+        assert repo.get_product(UUID(workspace["products"][0]["id"])).material != "new material"
+        assert not any(item.action == "product_updated" for item in repo.list_audit_logs(task.id))
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_sku_updates_issues_and_preserves_decimal(workflow: WorkflowApplication, sample_workbook: bytes) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    updated = workflow.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
+    updated = workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90"), "color": "white"})
+    assert updated["task"]["version"] == 5
+    corrected = next(item for item in updated["skus"] if item["id"] == invalid_price["sku_id"])
+    assert corrected["price"] == 79.9
+    states = {item["code"]: item["resolved"] for item in updated["issues"]}
+    assert states["DUPLICATE_SKU"] and states["INVALID_PRICE"]
+    assert any(item["action"] == "sku_updated" for item in updated["audit_logs"])
+    assert updated["task"]["id"] == str(task.id)
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_sku_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
+    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    task, workspace = _review_ready(normal, sample_workbook)
+    target = workspace["skus"][0]
+    conflicting = _ConflictingWorkflow(postgres_factory, normal.storage, normal.actor_id, normal.max_upload_bytes)
+    with pytest.raises(DomainError, match="其他请求"):
+        conflicting.patch_sku(UUID(target["id"]), {"color": "blue"})
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_sku(target["id"]).color == target["color"]
+        assert repo.get_task(task.id).version == 4
+        assert not any(item.action == "sku_updated" for item in repo.list_audit_logs(task.id))
+
+
+@pytest.mark.postgres_integration
+def test_postgres_patch_sku_rolls_back_when_audit_fails(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    target = workspace["skus"][0]
+    monkeypatch.setattr(workflow, "audit", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failure")))
+    with pytest.raises(RuntimeError, match="audit failure"):
+        workflow.patch_sku(UUID(target["id"]), {"color": "blue"})
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_sku(UUID(target["id"])).color == target["color"]
+        assert repo.get_task(task.id).version == 3
+        assert not any(item.action == "sku_updated" for item in repo.list_audit_logs(task.id))
+
+
+@pytest.mark.postgres_integration
+def test_postgres_approve_products_is_blocked_by_unresolved_errors(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes) -> None:
+    task, _ = _review_ready(workflow, sample_workbook)
+    with pytest.raises(DomainError, match="错误级问题") as error:
+        workflow.approve_products(task.id, "blocked")
+    assert error.value.code == "UNRESOLVED_ERROR_ISSUES"
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).status == TaskStatus.WAITING_PRODUCT_REVIEW
+        assert repo.get_task(task.id).version == 3
+        assert repo.list_approvals(task.id) == []
+
+
+@pytest.mark.postgres_integration
+def test_postgres_approve_products_persists_approval_status_version_and_audit(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    workflow.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
+    workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90")})
+    approved = workflow.approve_products(task.id, "approved by test")
+    assert approved["task"]["status"] == TaskStatus.PRODUCT_APPROVED.value
+    assert approved["task"]["version"] == 6
+    assert approved["approvals"][0]["approval_type"] == "product"
+    assert approved["approvals"][0]["comment"] == "approved by test"
+    rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
+    assert rebuilt.workspace(task.id)["task"]["status"] == TaskStatus.PRODUCT_APPROVED.value
+
+
+@pytest.mark.postgres_integration
+def test_postgres_approve_products_rolls_back_when_audit_fails(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    workflow.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
+    workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90")})
+    monkeypatch.setattr(workflow, "audit", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failure")))
+    with pytest.raises(RuntimeError, match="audit failure"):
+        workflow.approve_products(task.id, "no commit")
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).status == TaskStatus.WAITING_PRODUCT_REVIEW
+        assert repo.get_task(task.id).version == 5
+        assert repo.list_approvals(task.id) == []
+
+
+@pytest.mark.postgres_integration
+def test_postgres_approve_products_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
+    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    task, workspace = _review_ready(normal, sample_workbook)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    normal.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
+    normal.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90")})
+    conflicting = _ConflictingWorkflow(postgres_factory, normal.storage, normal.actor_id, normal.max_upload_bytes)
+    with pytest.raises(DomainError, match="其他请求"):
+        conflicting.approve_products(task.id, "conflict")
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).status == TaskStatus.WAITING_PRODUCT_REVIEW
+        assert repo.get_task(task.id).version == 6
+        assert repo.list_approvals(task.id) == []
