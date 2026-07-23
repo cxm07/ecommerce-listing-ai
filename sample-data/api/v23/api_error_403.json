@@ -1,0 +1,4 @@
+{
+  "status": "failed", "data": null, "issues": [],
+  "error": {"code": "FORBIDDEN", "message": "You do not have permission for this action.", "details": null}
+}

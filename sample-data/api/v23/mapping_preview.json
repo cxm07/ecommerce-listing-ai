@@ -1,0 +1,6 @@
+{
+  "status": "needs_review",
+  "data": {"template_version_id": "00000000-0000-4000-8000-000000000021", "direction": "source_to_product", "preview": [{"source_field": "商品名称", "target_field": "name", "value": "Lightweight cotton T-shirt"}], "will_modify_task": false},
+  "issues": [{"code": "MAPPING_REQUIRES_CONFIRMATION", "severity": "info", "message": "Preview is non-mutating and requires human confirmation."}],
+  "error": null
+}

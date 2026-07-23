@@ -1,0 +1,15 @@
+{
+  "status": "needs_review",
+  "data": {
+    "task": {"id": "00000000-0000-4000-8000-000000000010", "name": "Summer listing", "state": "WAITING_PRODUCT_REVIEW"},
+    "files": [{"id": "00000000-0000-4000-8000-000000000011", "file_name": "sample-products.xlsx"}],
+    "products": [{"id": "00000000-0000-4000-8000-000000000012", "name": "Lightweight cotton T-shirt"}],
+    "skus": [{"id": "00000000-0000-4000-8000-000000000013", "product_id": "00000000-0000-4000-8000-000000000012", "sku_code": "TSHIRT-WHITE-M", "price": 79.9}],
+    "issues": [{"id": "00000000-0000-4000-8000-000000000014", "code": "MISSING_COLOR", "severity": "warning", "message": "Color is missing.", "resolved": false, "source_ref": {"file_id": "00000000-0000-4000-8000-000000000011", "file_name": "sample-products.xlsx", "template": "mvp-products-v1", "sheet": "Products", "row": 2, "field": "color"}}],
+    "generated_content": [],
+    "approvals": [],
+    "audit_logs": []
+  },
+  "issues": [{"code": "MISSING_COLOR", "severity": "warning", "message": "Color is missing."}],
+  "error": null
+}

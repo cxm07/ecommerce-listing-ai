@@ -1,0 +1,4 @@
+{
+  "status": "failed", "data": null, "issues": [],
+  "error": {"code": "AUTHENTICATION_REQUIRED", "message": "Authentication is required.", "details": null}
+}
