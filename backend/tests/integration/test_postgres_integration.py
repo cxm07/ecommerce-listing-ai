@@ -102,6 +102,13 @@ class _ConflictingWorkflow(WorkflowApplication):
             competing.commit()
         super().transition(repo_or_task, task_or_target, target_or_action, action)
 
+    def advance_parsed_task(self, repo, task) -> TaskStatus:
+        with self.repository_factory.unit_of_work() as competing:
+            assert competing.repository is not None
+            competing.repository.advance_task(task.id, task.version)
+            competing.commit()
+        return super().advance_parsed_task(repo, task)
+
 
 @pytest.mark.postgres_integration
 def test_postgres_upload_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:

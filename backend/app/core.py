@@ -326,6 +326,14 @@ class WorkflowApplication:
             issues.append(Issue(uuid4(), task_id, product_id, sku_id, code, field_name, severity, message, ref, signature))
         return issues
 
+    def advance_parsed_task(self, repo: Any, task: Task) -> TaskStatus:
+        """Validate the two V1 parse edges, then persist only the final state once."""
+        parsing_status = self.workflow.transition(task.status, TaskStatus.PARSING)
+        target = self.workflow.transition(parsing_status, TaskStatus.WAITING_PRODUCT_REVIEW)
+        task.version = repo.advance_task(task.id, task.version, target)
+        task.status, task.updated_at = target, now()
+        return target
+
     def parse(self, task_id: UUID) -> dict[str, int]:
         with self.repository_factory.read_repository() as repo:
             task = repo.get_task(task_id)
@@ -340,12 +348,7 @@ class WorkflowApplication:
             for product in products: repo.add_product(product)
             for sku in skus: repo.add_sku(sku)
             for issue in issues: repo.add_issue(issue)
-            # Validate both existing state-machine edges without persisting the
-            # transient PARSING state in a separately observable transaction.
-            parsing_status = self.workflow.transition(current.status, TaskStatus.PARSING)
-            target = self.workflow.transition(parsing_status, TaskStatus.WAITING_PRODUCT_REVIEW)
-            current.version = repo.advance_task(current.id, current.version, target)
-            current.status, current.updated_at = target, now()
+            self.advance_parsed_task(repo, current)
             self.audit(repo, current.id, "parsing_completed")
             uow.commit()
         counts = defaultdict(int)
