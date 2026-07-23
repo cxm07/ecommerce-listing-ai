@@ -133,7 +133,8 @@ def test_postgres_parse_persists_complete_aggregate_and_rebuilds_application(wor
     workspace = rebuilt.workspace(task.id)
     assert set(workspace) == {"task", "files", "products", "skus", "issues", "generated_content", "approvals", "audit_logs"}
     assert workspace["task"]["status"] == TaskStatus.WAITING_PRODUCT_REVIEW.value
-    assert workspace["task"]["version"] == 3
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 3
     assert len(workspace["files"]) == 1 and len(workspace["products"]) == 1
     assert len(workspace["skus"]) == 6 and len(workspace["issues"]) == 5
     assert {event["action"] for event in workspace["audit_logs"]} == {"task_created", "source_uploaded", "parsing_completed"}
@@ -205,7 +206,8 @@ def test_postgres_patch_product_updates_issues_version_and_audit(workflow: Workf
     task, workspace = _review_ready(workflow, sample_workbook)
     product_id = workspace["products"][0]["id"]
     updated = workflow.patch_product(UUID(product_id), {"material": "combed cotton"})
-    assert updated["task"]["version"] == 4
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 4
     assert updated["products"][0]["material"] == "combed cotton"
     assert any(item["action"] == "product_updated" for item in updated["audit_logs"])
     rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
@@ -239,13 +241,14 @@ def test_postgres_patch_product_rolls_back_on_version_conflict(postgres_factory:
 
 
 @pytest.mark.postgres_integration
-def test_postgres_patch_sku_updates_issues_and_preserves_decimal(workflow: WorkflowApplication, sample_workbook: bytes) -> None:
+def test_postgres_patch_sku_updates_issues_and_preserves_decimal(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes) -> None:
     task, workspace = _review_ready(workflow, sample_workbook)
     duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
     invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
     updated = workflow.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
     updated = workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90"), "color": "white"})
-    assert updated["task"]["version"] == 5
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 5
     corrected = next(item for item in updated["skus"] if item["id"] == invalid_price["sku_id"])
     assert corrected["price"] == 79.9
     states = {item["code"]: item["resolved"] for item in updated["issues"]}
@@ -302,7 +305,8 @@ def test_postgres_approve_products_persists_approval_status_version_and_audit(wo
     workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90")})
     approved = workflow.approve_products(task.id, "approved by test")
     assert approved["task"]["status"] == TaskStatus.PRODUCT_APPROVED.value
-    assert approved["task"]["version"] == 6
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 6
     assert approved["approvals"][0]["approval_type"] == "product"
     assert approved["approvals"][0]["comment"] == "approved by test"
     rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
@@ -360,6 +364,7 @@ def test_complete_v1_workflow_with_postgres(workflow: WorkflowApplication, postg
     rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
     restored = rebuilt.workspace(task.id)
     assert restored["task"]["status"] == TaskStatus.EXPORTED.value
-    assert restored["task"]["version"] == 9
+    with postgres_factory.read_repository() as repo:
+        assert repo.get_task(task.id).version == 9
     assert len(restored["generated_content"]) == len(restored["products"])
     assert {approval["approval_type"] for approval in restored["approvals"]} == {"product", "copy"}
