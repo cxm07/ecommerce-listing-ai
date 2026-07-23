@@ -64,9 +64,9 @@ def create_app(app_settings: Settings = settings, service: WorkflowApplication |
     @app.post("/api/tasks", status_code=201, response_model=ApiResponse[Any])
     async def create_task(body: CreateTaskRequest, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.create_task(body.task_name, body.category))
     @app.get("/api/tasks", response_model=ApiResponse[Any])
-    async def list_tasks(svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": sorted(svc.repo.tasks.values(), key=lambda item: item.updated_at, reverse=True)})
+    async def list_tasks(svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", {"items": svc.list_tasks()})
     @app.get("/api/tasks/{task_id}", response_model=ApiResponse[Any])
-    async def get_task(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.repo.task(task_id))
+    async def get_task(task_id: UUID, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]: return envelope("success", svc.get_task(task_id))
     @app.post("/api/tasks/{task_id}/files", response_model=ApiResponse[Any])
     async def upload(task_id: UUID, file: UploadFile, svc: WorkflowApplication = Depends(get_service)) -> dict[str, Any]:
         item = svc.upload(task_id, file.filename or "upload.xlsx", await file.read()); return envelope("success", {"file_id": str(item.id)})
