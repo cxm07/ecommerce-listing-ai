@@ -124,7 +124,7 @@ function UserNav() {
         </small>
       </div>
       <button type="button" onClick={() => void auth.signOut()}>
-        退出
+        退出登录
       </button>
     </div>
   );
@@ -314,6 +314,7 @@ export function NewTaskPage() {
   };
   return (
     <Shell eyebrow="创建任务" title="开始一批新的上新资料">
+      <WorkspaceStep status="DRAFT" />
       <section className="form-card">
         <p>创建后先上传固定 Excel 模板。当前数据源：{dataSourceLabel}。</p>
         <form onSubmit={submit}>
