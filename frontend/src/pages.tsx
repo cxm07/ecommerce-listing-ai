@@ -12,15 +12,14 @@ import { formatSourceRef } from "./domain/sourceRef";
 import { ProductEditor } from "./components/ProductEditor";
 import { SkuEditor } from "./components/SkuEditor";
 import { triggerBlobDownload } from "./domain/download";
-import {
-  getTaskActionState,
-  taskStatusLabels,
-} from "./domain/workflow";
+import { getTaskActionState, taskStatusLabels } from "./domain/workflow";
 import { taskRepository } from "./data/repositoryFactory";
 import { NavigationItem } from "./components/NavigationItem";
 import { WorkspaceStep } from "./components/WorkspaceStep";
 import { filterTasks } from "./components/TaskFilters";
 import { UploadCard } from "./components/UploadCard";
+import { IssueSummary } from "./components/IssueSummary";
+import { SmartFixPreview } from "./components/SmartFixPreview";
 
 const demoId = "task-demo";
 const isApiMode = import.meta.env.VITE_DATA_SOURCE === "api";
@@ -116,11 +115,15 @@ function UserNav() {
   };
   return (
     <div className="current-user">
-      <span className="user-avatar">{auth.session.user.display_name.slice(0, 1)}</span>
+      <span className="user-avatar">
+        {auth.session.user.display_name.slice(0, 1)}
+      </span>
       <div>
         <b>{auth.session.user.display_name}</b>
         <small data-testid="current-user-role">
-          {auth.session.user.roles.map((role) => roleLabels[role] ?? role).join("、")}
+          {auth.session.user.roles
+            .map((role) => roleLabels[role] ?? role)
+            .join("、")}
         </small>
       </div>
       <button type="button" onClick={() => void auth.signOut()}>
@@ -438,6 +441,7 @@ export function ProductReviewPage() {
   const { taskId, workspace, setWorkspace, message, setMessage } =
     useWorkspace();
   const [editingSkuId, setEditingSkuId] = useState<string | null>(null);
+  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
   const refreshFrom = (
     result: Awaited<ReturnType<typeof taskRepository.updateSku>>,
   ) => {
@@ -468,6 +472,14 @@ export function ProductReviewPage() {
   const openErrors = errors(workspace.issues);
   const product = workspace.products[0];
   const editingSku = workspace.skus.find((sku) => sku.id === editingSkuId);
+  const focusedIssue = workspace.issues.find(
+    (issue) => issue.id === focusedIssueId,
+  );
+  const focusIssue = (issueId: string) => {
+    const issue = workspace.issues.find((item) => item.id === issueId);
+    setFocusedIssueId(issueId);
+    if (issue?.sku_id) setEditingSkuId(issue.sku_id);
+  };
   return (
     <Shell
       eyebrow="审核工作台"
@@ -475,7 +487,7 @@ export function ProductReviewPage() {
       action={<StatusPill status={workspace.task.status} />}
     >
       <Stepper workspace={workspace} />
-      <div className="review-grid">
+      <div className="review-workbench">
         <section className="panel product-card">
           <div className="panel-title">
             <div>
@@ -525,7 +537,29 @@ export function ProductReviewPage() {
             </button>
           </div>
         </section>
-        <IssuePanel issues={workspace.issues} />
+        <aside className="review-sidebar">
+          <IssueSummary
+            focusedIssueId={focusedIssueId}
+            issues={workspace.issues}
+            onFocus={focusIssue}
+          />
+          <SmartFixPreview issues={workspace.issues} />
+          <section className="focus-card" aria-live="polite">
+            <p className="eyebrow">当前定位</p>
+            {focusedIssue ? (
+              <>
+                <h3>{focusedIssue.message}</h3>
+                <p>
+                  {formatSourceRef(focusedIssue.source_ref)} · 字段{" "}
+                  {focusedIssue.field}
+                </p>
+                <small>已打开对应 SKU 的编辑区；保存后由后端重新检测。</small>
+              </>
+            ) : (
+              <p>从问题列表选择一项，系统会定位到对应 SKU 与字段。</p>
+            )}
+          </section>
+        </aside>
       </div>
     </Shell>
   );
