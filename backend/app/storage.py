@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+import httpx
+
 from app.core import DomainError
 
 
@@ -55,12 +57,39 @@ class LocalStorageAdapter(StorageAdapter):
 
 
 class SupabaseStorageAdapter(StorageAdapter):
-    """Configuration boundary. Remote calls are intentionally server-only in B3."""
-    def __init__(self, url: str, service_role_key: str, bucket: str = "task-files") -> None:
+    """Synchronous, server-only Supabase Storage HTTP adapter."""
+    def __init__(self, url: str, service_role_key: str, bucket: str = "task-files", timeout_seconds: float = 10) -> None:
         if not url or not service_role_key: raise DomainError("INVALID_STORAGE_CONFIG", "Supabase Storage 服务端配置缺失", 500)
-        self.url, self.service_role_key, self.bucket = url.rstrip("/"), service_role_key, bucket
-    def put_source(self, task_id: UUID, file_id: UUID, filename: str, payload: bytes) -> StoredObject: raise DomainError("STORAGE_UNAVAILABLE", "Supabase Storage 远程调用未配置",503)
-    def put_export(self, task_id: UUID, file_id: UUID, payload: bytes) -> StoredObject: raise DomainError("STORAGE_UNAVAILABLE", "Supabase Storage 远程调用未配置",503)
-    def read(self, path: str) -> bytes: raise DomainError("STORAGE_UNAVAILABLE", "Supabase Storage 远程调用未配置",503)
-    def delete(self, path: str) -> None: raise DomainError("STORAGE_UNAVAILABLE", "Supabase Storage 远程调用未配置",503)
-    def exists(self, path: str) -> bool: return False
+        self.url, self.service_role_key, self.bucket, self.timeout_seconds = url.rstrip("/"), service_role_key, bucket, timeout_seconds
+    def _url(self, path: str) -> str:
+        if not path.startswith("tasks/") or ".." in path: raise DomainError("INVALID_STORAGE_PATH", "非法文件路径")
+        return f"{self.url}/storage/v1/object/{self.bucket}/{path}"
+    @property
+    def _headers(self): return {"apikey":self.service_role_key,"authorization":f"Bearer {self.service_role_key}"}
+    def _put(self,path,payload):
+        if not payload: raise DomainError("EMPTY_FILE","上传文件不能为空")
+        try: r=httpx.put(self._url(path),content=payload,headers={**self._headers,"content-type":LocalStorageAdapter.mime_type,"x-upsert":"false"},timeout=self.timeout_seconds)
+        except httpx.HTTPError as exc: raise DomainError("STORAGE_UNAVAILABLE","对象存储当前不可用",503) from exc
+        if r.status_code in {400,409}: raise DomainError("STORAGE_OBJECT_EXISTS","存储对象已存在",409)
+        if r.is_error: raise DomainError("STORAGE_UNAVAILABLE","对象存储写入失败",503)
+        return StoredObject(path,hashlib.sha256(payload).hexdigest(),len(payload),LocalStorageAdapter.mime_type)
+    def put_source(self,task_id,file_id,filename,payload):
+        if not filename.lower().endswith(".xlsx"): raise DomainError("INVALID_FILE_TYPE","仅支持 .xlsx 文件")
+        return self._put(f"tasks/{task_id}/sources/{file_id}/source.xlsx",payload)
+    def put_export(self,task_id,file_id,payload): return self._put(f"tasks/{task_id}/exports/{file_id}/listing.xlsx",payload)
+    def read(self,path):
+        try:r=httpx.get(self._url(path),headers=self._headers,timeout=self.timeout_seconds)
+        except httpx.HTTPError as exc: raise DomainError("STORAGE_UNAVAILABLE","对象存储当前不可用",503) from exc
+        if r.status_code==404: raise DomainError("FILE_NOT_FOUND","文件不存在",404)
+        if r.is_error: raise DomainError("STORAGE_UNAVAILABLE","对象存储读取失败",503)
+        return r.content
+    def delete(self,path):
+        try:r=httpx.delete(self._url(path),headers=self._headers,timeout=self.timeout_seconds)
+        except httpx.HTTPError as exc: raise DomainError("STORAGE_COMPENSATION_FAILED","存储补偿删除失败",503) from exc
+        if r.is_error and r.status_code!=404: raise DomainError("STORAGE_COMPENSATION_FAILED","存储补偿删除失败",503)
+    def exists(self,path):
+        try:r=httpx.head(self._url(path),headers=self._headers,timeout=self.timeout_seconds)
+        except httpx.HTTPError as exc: raise DomainError("STORAGE_UNAVAILABLE","对象存储当前不可用",503) from exc
+        if r.status_code==404:return False
+        if r.is_error: raise DomainError("STORAGE_UNAVAILABLE","对象存储检查失败",503)
+        return True
