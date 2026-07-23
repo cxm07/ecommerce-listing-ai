@@ -40,4 +40,4 @@ def test_memory_review_commands_advance_task_version(tmp_path, sample_workbook: 
     service.patch_sku(UUID(invalid_price["sku_id"]), {"price": "79.90"})
     approved = service.approve_products(task.id, "ok")
     assert approved["task"]["status"] == "PRODUCT_APPROVED"
-    assert approved["task"]["version"] == 7
+    assert service.get_task(task.id).version == 7

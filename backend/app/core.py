@@ -12,10 +12,14 @@ from typing import Any, Protocol
 from contextlib import contextmanager
 from copy import deepcopy
 from uuid import UUID, uuid4
+import logging
 
 from openpyxl import Workbook, load_workbook
 
 from app.workflow import TaskStatus, WorkflowService
+
+
+logger = logging.getLogger(__name__)
 
 
 def now() -> str:
@@ -35,6 +39,19 @@ def json_value(value: Any) -> Any:
     if isinstance(value, list): return [json_value(item) for item in value]
     if isinstance(value, dict): return {key: json_value(item) for key, item in value.items()}
     return value
+
+
+def public_task(task: "Task") -> dict[str, Any]:
+    """Return only the Task fields promised by the V1 HTTP contract."""
+    return {
+        "id": task.id,
+        "task_name": task.task_name,
+        "category": task.category,
+        "creator_id": task.creator_id,
+        "status": task.status,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
 
 
 class DomainError(Exception):
@@ -180,6 +197,13 @@ class LocalFileStorage:
         path = (self.root / relative).resolve()
         if self.root.resolve() not in path.parents or not path.is_file(): raise DomainError("FILE_NOT_FOUND", "文件不存在", 404)
         return path.read_bytes()
+    def delete(self, relative: str) -> None:
+        """Delete an internally-created storage path without allowing traversal."""
+        root = self.root.resolve()
+        path = (root / relative).resolve()
+        if root not in path.parents:
+            raise DomainError("INVALID_STORAGE_PATH", "Invalid storage path.")
+        path.unlink(missing_ok=True)
 
 
 def atomic(operation: Any) -> Any:
@@ -280,17 +304,34 @@ class WorkflowApplication:
     def upload(self, task_id: UUID, filename: str, payload: bytes) -> TaskFile:
         if not filename.lower().endswith(".xlsx"): raise DomainError("INVALID_FILE_TYPE", "仅支持 .xlsx 文件")
         if len(payload) > self.max_upload_bytes: raise DomainError("FILE_TOO_LARGE", "文件超过大小限制")
-        storage_path = self.storage.save("source", payload)
-        with self.repository_factory.unit_of_work() as uow:
-            repo = uow.repository
+        if not payload: raise DomainError("EMPTY_FILE", "上传文件不能为空")
+        with self.repository_factory.read_repository() as repo:
             task = repo.get_task(task_id)
             if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
-            if repo.list_task_files(task_id): raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
-            item = TaskFile(uuid4(), task_id, storage_path, filename, "source")
-            repo.add_file(item)
-            self.transition(repo, task, TaskStatus.UPLOADED, "source_uploaded")
-            uow.commit()
-            return item
+            if any(item.file_kind == "source" for item in repo.list_task_files(task_id)):
+                raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
+
+        storage_path: str | None = None
+        try:
+            storage_path = self.storage.save("source", payload)
+            with self.repository_factory.unit_of_work() as uow:
+                repo = uow.repository
+                task = repo.get_task(task_id)
+                if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
+                if any(item.file_kind == "source" for item in repo.list_task_files(task_id)):
+                    raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
+                item = TaskFile(uuid4(), task_id, storage_path, filename, "source")
+                repo.add_file(item)
+                self.transition(repo, task, TaskStatus.UPLOADED, "source_uploaded")
+                uow.commit()
+                return item
+        except Exception:
+            if storage_path is not None:
+                try:
+                    self.storage.delete(storage_path)
+                except Exception:
+                    logger.warning("Failed to clean up rejected source upload", exc_info=True)
+            raise
 
     def _parse_records(self, task_id: UUID, source: TaskFile) -> tuple[list[Product], list[SKU], list[Issue]]:
         rows = self.reader.parse(self.storage.read(source.storage_path))
@@ -421,7 +462,7 @@ class WorkflowApplication:
     @staticmethod
     def _workspace_from_repo(repo: Any, task_id: UUID) -> dict[str, Any]:
         task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
-        return json_value({"task": asdict(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
+        return json_value({"task": public_task(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
     def patch_product(self, product_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
         with self.repository_factory.unit_of_work() as uow:
             repo = uow.repository

@@ -8,9 +8,12 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
+from app.config import Settings
 from app.core import DomainError, LocalFileStorage, WorkflowApplication
+from app.main import create_app
 from app.persistence import PostgresRepositoryFactory
 from app.workflow import TaskStatus
 
@@ -94,6 +97,7 @@ def test_postgres_upload_rolls_back_when_audit_fails(workflow: WorkflowApplicati
         assert repo.get_task(task.id).version == 1
         assert repo.list_task_files(task.id) == []
         assert [event.action for event in repo.list_audit_logs(task.id)] == ["task_created"]
+    assert not list((workflow.storage.root / "sources").glob("*.xlsx"))
 
 
 class _ConflictingWorkflow(WorkflowApplication):
@@ -116,6 +120,7 @@ def test_postgres_upload_rolls_back_on_version_conflict(postgres_factory: Postgr
         assert repo.get_task(task.id).version == 2  # only the competing connection advanced it
         assert repo.list_task_files(task.id) == []
         assert [event.action for event in repo.list_audit_logs(task.id)] == ["task_created"]
+    assert not list((tmp_path / "sources").glob("*.xlsx"))
 
 
 @pytest.mark.postgres_integration
@@ -169,6 +174,23 @@ def test_postgres_read_repository_supports_list_get_and_workspace(workflow: Work
         assert [item.id for item in repo.list_tasks() if item.id == task.id] == [task.id]
         assert repo.get_task(task.id).id == task.id
     assert workflow.workspace(task.id)["task"]["id"] == str(task.id)
+
+
+@pytest.mark.postgres_integration
+def test_postgres_api_task_responses_do_not_expose_version(workflow: WorkflowApplication) -> None:
+    expected = {"id", "task_name", "category", "creator_id", "status", "created_at", "updated_at"}
+    with TestClient(create_app(Settings(), workflow)) as client:
+        created = client.post("/api/tasks", json={"task_name": "Public task", "category": "test"}).json()["data"]
+        task_id = created["id"]
+        values = [
+            created,
+            client.get("/api/tasks").json()["data"]["items"][0],
+            client.get(f"/api/tasks/{task_id}").json()["data"],
+            client.get(f"/api/tasks/{task_id}/workspace").json()["data"]["task"],
+        ]
+    for value in values:
+        assert set(value) == expected
+        assert "version" not in value
 
 
 def _review_ready(workflow: WorkflowApplication, sample_workbook: bytes):
