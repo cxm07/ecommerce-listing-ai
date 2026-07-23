@@ -15,4 +15,6 @@ Run the credential-free structural check from the repository root:
 python scripts/validate_v23_schema.py
 ```
 
+CI additionally starts a disposable local stack, runs `supabase db reset --local`, then executes `supabase/tests/v23_schema_validation.sql`. No remote project reference is required by `supabase/config.toml`.
+
 Do not commit `.env`, database passwords, access tokens, publishable keys, or service-role keys. B1 does not create a Storage bucket, connect FastAPI, or permit browser writes to workflow tables. For a disposable local database, a reset/rebuild is acceptable; any shared or production rollback requires an approved, forward-only migration or restore plan.

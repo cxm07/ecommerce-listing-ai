@@ -37,7 +37,7 @@ The migration is [20260723132000_v23_core_schema.sql](../supabase/migrations/202
 python scripts/validate_v23_schema.py
 ```
 
-When a non-production Supabase/local database is provisioned, use the repository's Supabase CLI workflow to apply/reset migrations there, inspect RLS policies, and run database integration tests. Do not run B1 against production as part of development. A rollback for a disposable development database is `supabase db reset`; production rollback must be an explicitly reviewed forward migration or restore plan, never an unreviewed destructive drop.
+The `database-schema` CI job starts a disposable local Supabase stack, applies all migrations from an empty database with `supabase db reset --local`, and runs `supabase/tests/v23_schema_validation.sql`. It verifies catalog objects, RLS/policies, constraints, duplicate-SKU allowance, and immutable triggers. Do not run B1 against production as part of development. A rollback for a disposable development database is `supabase db reset`; production rollback must be an explicitly reviewed forward migration or restore plan, never an unreviewed destructive drop.
 
 ## Configuration and limits
 

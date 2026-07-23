@@ -34,3 +34,16 @@ jobs:
         working-directory: backend
       - run: pytest -q
         working-directory: backend
+
+  database-schema:
+    name: Database schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.81.1
+      - run: supabase start
+      - run: supabase db reset --local
+      - run: supabase db query --local --file supabase/tests/v23_schema_validation.sql
+      - run: python scripts/validate_v23_schema.py
