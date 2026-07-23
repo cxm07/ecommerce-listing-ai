@@ -8,10 +8,12 @@ from app.persistence import PostgresRepository
 from app.workflow import TaskStatus
 
 
-@pytest.mark.integration
+@pytest.mark.postgres_integration
 def test_postgres_task_and_audit_persist_across_repository_instances() -> None:
     url = os.getenv("SUPABASE_DB_URL")
     if not url:
+        if os.getenv("CI"):
+            pytest.fail("CI must provide SUPABASE_DB_URL for Postgres integration tests")
         pytest.skip("SUPABASE_DB_URL is supplied by the disposable CI Supabase instance")
     actor, task_id = uuid4(), uuid4()
     repo = PostgresRepository(url, actor); repo.open()

@@ -44,6 +44,8 @@ jobs:
           version: 2.81.1
       - run: supabase start
       - run: supabase db reset --local
+      - name: Export disposable local Supabase connection settings
+        run: supabase status -o env >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -52,8 +54,10 @@ jobs:
       - name: Run Postgres repository integration tests
         working-directory: backend
         env:
-          SUPABASE_DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: pytest -q tests/integration
+          SUPABASE_DB_URL: ${{ env.DB_URL }}
+          DATA_REPOSITORY: postgres
+          APP_ENV: test
+        run: pytest -q -m postgres_integration
       - name: Run schema assertions through local Postgres
         run: |
           db_container="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
