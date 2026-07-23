@@ -1,0 +1,5 @@
+{
+  "status": "needs_review", "data": null,
+  "issues": [{"code": "INVALID_PRICE", "severity": "error", "message": "Price must be numeric."}],
+  "error": {"code": "UNRESOLVED_ERROR_ISSUES", "message": "Resolve error issues before approving products.", "details": null}
+}
