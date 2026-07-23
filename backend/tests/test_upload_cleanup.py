@@ -51,6 +51,15 @@ def test_upload_deletes_saved_source_when_audit_or_version_write_fails(tmp_path:
     assert source_paths(storage) == []
 
 
+def test_upload_deletes_saved_source_when_database_registration_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow, repository, storage = make_workflow(tmp_path)
+    task = workflow.create_task("test", "category")
+    monkeypatch.setattr(repository, "add_file", lambda _: (_ for _ in ()).throw(RuntimeError("file registration failure")))
+    with pytest.raises(RuntimeError, match="file registration failure"):
+        workflow.upload(task.id, "source.xlsx", b"payload")
+    assert source_paths(storage) == []
+
+
 def test_upload_success_keeps_exactly_one_source_file(tmp_path: Path) -> None:
     workflow, repository, storage = make_workflow(tmp_path)
     task = workflow.create_task("test", "category")
