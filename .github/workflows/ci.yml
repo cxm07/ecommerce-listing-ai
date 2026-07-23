@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   frontend:
@@ -45,6 +44,16 @@ jobs:
           version: 2.81.1
       - run: supabase start
       - run: supabase db reset --local
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+        working-directory: backend
+      - name: Run Postgres repository integration tests
+        working-directory: backend
+        env:
+          SUPABASE_DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: pytest -q tests/integration
       - name: Run schema assertions through local Postgres
         run: |
           db_container="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
