@@ -45,5 +45,10 @@ jobs:
           version: 2.81.1
       - run: supabase start
       - run: supabase db reset --local
-      - run: supabase db query --local --file supabase/tests/v23_schema_validation.sql
+      - name: Run schema assertions through local Postgres
+        run: |
+          db_container="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
+          test -n "$db_container"
+          docker cp supabase/tests/v23_schema_validation.sql "$db_container:/tmp/v23_schema_validation.sql"
+          docker exec "$db_container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f /tmp/v23_schema_validation.sql
       - run: python scripts/validate_v23_schema.py
