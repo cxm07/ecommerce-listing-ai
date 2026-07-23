@@ -1,0 +1,1 @@
+{"should_trigger":["draft approved product copy","write title from approved facts","create selling points","prepare listing draft","make copy for reviewed product"],"should_not_trigger":["draft unapproved facts","parse Excel","approve copy","export xlsx","publish listing"]}

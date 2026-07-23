@@ -1,0 +1,1 @@
+{"should_trigger":["review product issues","make SKU checklist","check data quality","what needs review","summarize blocking SKU issues"],"should_not_trigger":["parse Excel","edit price","approve task","export xlsx","publish listing"]}
