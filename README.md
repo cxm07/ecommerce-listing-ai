@@ -22,7 +22,7 @@ backend/         FastAPI 应用与领域边界
 docs/            公共产品、契约和架构文档
 knowledge/       MVP 演示知识规则
 integrations/    外部连接器边界说明
-supabase/        未来数据库迁移目录
+supabase/        Supabase PostgreSQL 迁移与本地说明
 sample-data/     固定模板样本及预期结果
 tests/           跨模块测试预留目录
 ```
@@ -70,4 +70,4 @@ cd ..\backend; pytest
 
 V1 已完成本地单用户演示型 MVP：固定 Excel 模板导入、问题检查、人工审核、确定性文案草稿与 Excel 导出均已通过验收。当前实现仍使用内存 Repository 和本地文件存储；服务重启后业务数据不会保留，且尚未实现认证、多用户隔离、Supabase、真实模型或外部平台发布。
 
-V2–V3 的公共范围、数据模型、API 演进和协作交接见 [docs/V23_SCOPE.md](docs/V23_SCOPE.md)、[docs/V23_DATA_MODEL.md](docs/V23_DATA_MODEL.md)、[docs/V23_API_PLAN.md](docs/V23_API_PLAN.md) 与 [docs/V23_HANDOFF.md](docs/V23_HANDOFF.md)。后续实现必须先遵守这些契约，并继续以 [docs/API_CONTRACT.md](docs/API_CONTRACT.md) 为现有 V1 联调边界。
+V2–V3 的公共范围、数据模型、API 演进和协作交接见 [docs/V23_SCOPE.md](docs/V23_SCOPE.md)、[docs/V23_DATA_MODEL.md](docs/V23_DATA_MODEL.md)、[docs/V23_API_PLAN.md](docs/V23_API_PLAN.md) 与 [docs/V23_HANDOFF.md](docs/V23_HANDOFF.md)。B1 已添加数据库 Schema 与初始 RLS 迁移，说明见 [docs/V23_DATABASE.md](docs/V23_DATABASE.md)；它尚未连接 FastAPI 或 Supabase Storage。后续实现必须先遵守这些契约，并继续以 [docs/API_CONTRACT.md](docs/API_CONTRACT.md) 为现有 V1 联调边界。

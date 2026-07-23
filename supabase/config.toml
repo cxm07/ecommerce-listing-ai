@@ -1,0 +1,15 @@
+project_id = "ecommerce-listing-ai"
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+major_version = 17
+
+[studio]
+enabled = false
+
+[inbucket]
+enabled = false
