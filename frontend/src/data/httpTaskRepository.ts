@@ -106,6 +106,7 @@ export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskR
     startParse: (taskId) => request<ParseResult>(`/api/tasks/${taskId}/parse`, json('POST')),
     updateProduct: (productId, changes) => request<TaskWorkspace>(`/api/products/${productId}`, json('PATCH', changes)),
     updateSku: (skuId, changes) => request<TaskWorkspace>(`/api/skus/${skuId}`, json('PATCH', changes)),
+    applySafeFixes: async () => ({ status: 'failed', data: null, issues: [], error: { code: 'SMART_FIX_NOT_CONTRACTED', message: '当前后端尚未提供可执行的智能修复接口。', details: null } }),
     approveProducts: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/approve-products`, json('POST', { decision: 'approved' })),
     generateCopy: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/generate-copy`, json('POST')),
     approveCopy: (taskId) => workspaceAfter(taskId, `/api/tasks/${taskId}/approve-copy`, json('POST', { decision: 'approved' })),

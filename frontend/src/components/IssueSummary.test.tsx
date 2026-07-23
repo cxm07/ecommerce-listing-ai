@@ -56,7 +56,8 @@ describe("IssueSummary", () => {
     );
 
     expect(screen.getByLabelText("1 个阻断错误")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "定位：价格无效" }));
+    expect(screen.getByText("价格需要补充或修正")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "定位：价格需要补充或修正" }));
     expect(onFocus).toHaveBeenCalledWith("error-1");
   });
 });

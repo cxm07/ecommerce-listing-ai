@@ -1,4 +1,5 @@
 import type { Issue } from "../domain/contracts";
+import { issueBusinessLabel, issueLocationLabel } from "../domain/issuePresentation";
 
 const severityLabel: Record<Issue["severity"], string> = {
   error: "阻断错误",
@@ -38,7 +39,7 @@ export function IssueSummary({
       <div className="issue-summary-list">
         {openIssues.map((issue) => (
           <button
-            aria-label={`定位：${issue.message}`}
+            aria-label={`定位：${issueBusinessLabel(issue.code, issue.field)}`}
             aria-pressed={focusedIssueId === issue.id}
             className="issue-summary-row"
             data-severity={issue.severity}
@@ -47,11 +48,15 @@ export function IssueSummary({
             type="button"
           >
             <span>{severityLabel[issue.severity]}</span>
-            <b>{issue.message}</b>
+            <b>{issueBusinessLabel(issue.code, issue.field)}</b>
             <small>
               {issue.source_ref.sheet ?? "来源"} · 第{" "}
-              {issue.source_ref.row ?? "—"} 行 · {issue.field}
+              {issue.source_ref.row ?? "—"} 行 · {issueLocationLabel(issue.field)}
             </small>
+            <details className="issue-technical-detail">
+              <summary>检测详情</summary>
+              <code>{issue.code}</code>
+            </details>
           </button>
         ))}
       </div>

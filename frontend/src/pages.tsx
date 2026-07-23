@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useOptionalAuth } from "./auth/AuthProvider";
 import type {
   ApiResponse,
@@ -12,6 +12,8 @@ import { formatSourceRef } from "./domain/sourceRef";
 import { ProductEditor } from "./components/ProductEditor";
 import { SkuEditor } from "./components/SkuEditor";
 import { triggerBlobDownload } from "./domain/download";
+import { canApprove } from "./domain/permissions";
+import { issueBusinessLabel, issueLocationLabel } from "./domain/issuePresentation";
 import { getTaskActionState, taskStatusLabels } from "./domain/workflow";
 import { taskRepository } from "./data/repositoryFactory";
 import { NavigationItem } from "./components/NavigationItem";
@@ -20,6 +22,10 @@ import { filterTasks } from "./components/TaskFilters";
 import { UploadCard } from "./components/UploadCard";
 import { IssueSummary } from "./components/IssueSummary";
 import { SmartFixPreview } from "./components/SmartFixPreview";
+import {
+  auditActionLabel,
+  AuditDetailPanel,
+} from "./components/AuditDetailPanel";
 
 const demoId = "task-demo";
 const isApiMode = import.meta.env.VITE_DATA_SOURCE === "api";
@@ -65,7 +71,7 @@ function Shell({
             to="/tasks"
             label="任务中心"
             activeWhen={(path) =>
-              path === "/" || path === "/tasks" || path === "/tasks/new"
+              path === "/" || path === "/tasks" || path === "/tasks/new" || path.includes("/upload") || path.includes("/processing")
             }
           />
           <NavigationItem
@@ -74,9 +80,7 @@ function Shell({
             activeWhen={(path) =>
               path.includes("/products") ||
               path.includes("/copy") ||
-              path.includes("/export") ||
-              path.includes("/processing") ||
-              path.includes("/upload")
+              path.includes("/export")
             }
           />
           <NavigationItem
@@ -191,12 +195,19 @@ export function TaskListPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Task["status"] | "all">("all");
+  const [view, setView] = useState<"all" | "todo" | "review" | "exported" | "failed">("all");
   useEffect(() => {
     void taskRepository
       .listTasks()
       .then((result) => setTasks(result.data ?? []));
   }, []);
-  const visible = filterTasks(tasks, { query, status });
+  const visible = filterTasks(tasks, { query, status }).filter((task) => {
+    if (view === "todo") return ["DRAFT", "UPLOADED", "PARSING", "GENERATING_COPY"].includes(task.status);
+    if (view === "review") return ["WAITING_PRODUCT_REVIEW", "WAITING_COPY_REVIEW"].includes(task.status);
+    if (view === "exported") return task.status === "EXPORTED";
+    if (view === "failed") return task.status === "FAILED";
+    return true;
+  });
   return (
     <Shell
       eyebrow="任务中心"
@@ -221,6 +232,9 @@ export function TaskListPage() {
             <h2>进行中的工作</h2>
           </div>
           <span>{visible.length} 个任务</span>
+        </div>
+        <div className="task-view-tabs" aria-label="任务视图">
+          {[['all', '全部'], ['todo', '待处理'], ['review', '待审核'], ['exported', '已导出'], ['failed', '失败']].map(([value, label]) => <button key={value} type="button" aria-pressed={view === value} onClick={() => setView(value as typeof view)}>{label}</button>)}
         </div>
         <div className="task-filters">
           <label>
@@ -308,9 +322,11 @@ export function NewTaskPage() {
   const [error, setError] = useState("");
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!name.trim()) return setError("请填写任务名称");
+    const normalizedName = name.trim();
+    if (!normalizedName) return setError("请填写任务名称");
+    if (/^\d+$/.test(normalizedName)) return setError("任务名称不能只包含数字，请补充业务含义");
     const result = await taskRepository.createTask({
-      task_name: name.trim(),
+      task_name: normalizedName,
       category,
     });
     if (result.data) nav(`/tasks/${result.data.id}/upload`);
@@ -319,7 +335,7 @@ export function NewTaskPage() {
     <Shell eyebrow="创建任务" title="开始一批新的上新资料">
       <WorkspaceStep status="DRAFT" />
       <section className="form-card">
-        <p>创建后先上传固定 Excel 模板。当前数据源：{dataSourceLabel}。</p>
+        <p>创建后上传受控的 Excel 模板。任务名称用于区分本次上新批次，不会改变商品事实。</p>
         <form onSubmit={submit}>
           <label>
             任务名称
@@ -341,6 +357,11 @@ export function NewTaskPage() {
               <option>食品</option>
             </select>
           </label>
+          <section className="template-context" aria-label="导入模板">
+            <b>导入模板</b>
+            <span>当前使用固定的 MVP 商品导入模板（.xlsx）</span>
+            <small>模板库选择尚未进入当前 API 契约；创建后请上传符合模板要求的文件。</small>
+          </section>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" type="submit">
             创建并上传文件
@@ -370,42 +391,35 @@ export function UploadPage() {
     if (refreshed.data) setWorkspace({ ...refreshed.data });
   };
   if (!workspace) return <LoadingPage />;
+  if (workspace.task.status !== "DRAFT" && workspace.task.status !== "UPLOADED") {
+    const action = getTaskActionState({ status: workspace.task.status, unresolvedErrorCount: errors(workspace.issues), taskId: workspace.task.id });
+    return <Navigate replace to={action.href} />;
+  }
   return (
     <Shell eyebrow="文件上传" title={workspace.task.task_name}>
       <Stepper workspace={workspace} />
-      <section className="split-grid">
-        <div className="panel">
-          <p className="eyebrow">步骤 2 / 6</p>
+      <section className="upload-workspace panel">
+        <div>
+          <p className="eyebrow">下一步：上传文件</p>
           <h2>上传 Excel 源文件</h2>
           <p>仅支持 `.xlsx`。文件会在服务端解析、标准化并生成问题清单。</p>
           {workspace.task.status === "DRAFT" ? (
             <UploadCard onUpload={upload} />
           ) : null}
           {workspace.task.status === "UPLOADED" && (
-            <button className="soft-button" onClick={parse}>
+            <section className="source-file-card" aria-label="已上传源文件">
+              <div><span className="file-badge">XLSX</span><div><b>{workspace.files.find((file) => file.file_kind === "source")?.original_filename ?? "源文件"}</b><small>上传完成，等待开始解析</small></div></div>
+              <StatusPill status="UPLOADED" />
+            </section>
+          )}
+          {workspace.task.status === "UPLOADED" && (
+            <button className="primary-button" onClick={parse}>
               开始解析
             </button>
           )}
-          {parseResponse?.data && (
-            <p className="muted">
-              Parse result: {parseResponse.data.summary.product_count} products,{" "}
-              {parseResponse.data.summary.sku_count} SKUs, and{" "}
-              {parseResponse.data.summary.issue_count} issues.
-            </p>
-          )}
-          {parseResponse?.issues.length ? (
-            <p className="muted">
-              The parse response contains {parseResponse.issues.length} issues
-              requiring review.
-            </p>
-          ) : null}
+          {parseResponse?.data && <p className="notice-success">解析完成：识别到 {parseResponse.data.summary.product_count} 个商品、{parseResponse.data.summary.sku_count} 个 SKU，发现 {parseResponse.data.summary.issue_count} 个待处理问题。</p>}
           <p className="muted">{message}</p>
         </div>
-        <section className="panel">
-          <p className="eyebrow">当前状态</p>
-          <StatusPill status={workspace.task.status} />
-          <p className="muted">上传与解析的可执行性由后端状态机决定。</p>
-        </section>
       </section>
     </Shell>
   );
@@ -442,6 +456,7 @@ export function ProductReviewPage() {
     useWorkspace();
   const [editingSkuId, setEditingSkuId] = useState<string | null>(null);
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
+  const auth = useOptionalAuth();
   const refreshFrom = (
     result: Awaited<ReturnType<typeof taskRepository.updateSku>>,
   ) => {
@@ -468,6 +483,16 @@ export function ProductReviewPage() {
     refreshFrom(await taskRepository.updateSku(skuId, patch));
     setEditingSkuId(null);
   };
+  const applySafeFixes = async () => {
+    const result = await taskRepository.applySafeFixes(taskId);
+    if (result.data) {
+      setWorkspace({ ...result.data });
+      setMessage("已应用安全规范化处理，并完成重新检测。");
+      return true;
+    }
+    setMessage(result.error?.message ?? "智能处理暂时不可用");
+    return false;
+  };
   if (!workspace) return <LoadingPage />;
   const openErrors = errors(workspace.issues);
   const product = workspace.products[0];
@@ -480,6 +505,7 @@ export function ProductReviewPage() {
     setFocusedIssueId(issueId);
     if (issue?.sku_id) setEditingSkuId(issue.sku_id);
   };
+  const isApprover = canApprove(auth?.session?.user.roles);
   return (
     <Shell
       eyebrow="审核工作台"
@@ -498,14 +524,16 @@ export function ProductReviewPage() {
           </div>
           {product && <ProductEditor product={product} onSave={saveProduct} />}
           <h3>SKU 明细</h3>
-          <div className="sku-table">
+          <div className="sku-table" role="table" aria-label="SKU 明细">
+            <div className="sku-table-head" role="row"><span>SKU 编码</span><span>颜色</span><span>尺码</span><span>价格</span><span>库存</span><span>来源行</span><span>操作</span></div>
             {workspace.skus.map((sku) => (
-              <div key={sku.id}>
-                <b>{sku.sku_code ?? "待补 SKU 编码"}</b>
-                <span>
-                  {sku.color ?? "待补颜色"} · {sku.size ?? "—"}
-                </span>
-                <span>{sku.price == null ? "待补价格" : `¥${sku.price}`}</span>
+              <div key={sku.id} data-focused-field={focusedIssue?.sku_id === sku.id ? focusedIssue.field : undefined} className={workspace.issues.some((issue) => !issue.resolved && issue.sku_id === sku.id) ? "sku-row has-issue" : "sku-row"}>
+                <b data-field="sku_code">{sku.sku_code ?? "待补 SKU 编码"}</b>
+                <span data-field="color">{sku.color ?? "待补颜色"}</span>
+                <span data-field="size">{sku.size ?? "待补尺码"}</span>
+                <span data-field="price">{sku.price == null ? "待补价格" : `¥${sku.price}`}</span>
+                <span data-field="stock">{sku.stock == null ? "待补库存" : sku.stock}</span>
+                <span>{sku.source_row}</span>
                 <button
                   className="link-button"
                   onClick={() => setEditingSkuId(sku.id)}
@@ -516,7 +544,7 @@ export function ProductReviewPage() {
             ))}
           </div>
           {editingSku && <SkuEditor sku={editingSku} onSave={saveSku} />}
-          <div className="review-action">
+          <div className="review-action" aria-label="商品审核操作">
             <div>
               <b>
                 {openErrors
@@ -525,16 +553,7 @@ export function ProductReviewPage() {
               </b>
               <small>{message || "修正事实后由后端重新检测问题。"}</small>
             </div>
-            <button
-              className="primary-button"
-              disabled={
-                openErrors > 0 ||
-                workspace.task.status !== "WAITING_PRODUCT_REVIEW"
-              }
-              onClick={approve}
-            >
-              审核商品通过
-            </button>
+            {isApprover ? <button className="primary-button" disabled={openErrors > 0 || workspace.task.status !== "WAITING_PRODUCT_REVIEW"} onClick={approve}>审核商品通过</button> : <span className="review-handoff">商品修正完成后，将由审核人员确认通过。</span>}
           </div>
         </section>
         <aside className="review-sidebar">
@@ -543,15 +562,15 @@ export function ProductReviewPage() {
             issues={workspace.issues}
             onFocus={focusIssue}
           />
-          <SmartFixPreview issues={workspace.issues} />
+          <SmartFixPreview issues={workspace.issues} originalValue={product?.product_name ?? ""} onApply={applySafeFixes} executable={!isApiMode} />
           <section className="focus-card" aria-live="polite">
             <p className="eyebrow">当前定位</p>
             {focusedIssue ? (
               <>
-                <h3>{focusedIssue.message}</h3>
+                <h3>{issueBusinessLabel(focusedIssue.code, focusedIssue.field)}</h3>
                 <p>
                   {formatSourceRef(focusedIssue.source_ref)} · 字段{" "}
-                  {focusedIssue.field}
+                  {issueLocationLabel(focusedIssue.field)}
                 </p>
                 <small>已打开对应 SKU 的编辑区；保存后由后端重新检测。</small>
               </>
@@ -568,6 +587,7 @@ export function ProductReviewPage() {
 export function CopyReviewPage() {
   const { taskId, workspace, setWorkspace, message, setMessage } =
     useWorkspace();
+  const auth = useOptionalAuth();
   const generate = async () => {
     const result = await taskRepository.generateCopy(taskId);
     if (result.data) {
@@ -589,6 +609,7 @@ export function CopyReviewPage() {
   const reviewed =
     workspace.task.status === "APPROVED" ||
     workspace.task.status === "EXPORTED";
+  const isApprover = canApprove(auth?.session?.user.roles);
   return (
     <Shell eyebrow="文案审核" title="确认商品表达">
       <Stepper workspace={workspace} />
@@ -626,13 +647,7 @@ export function CopyReviewPage() {
                 生成商品文案
               </button>
             )}
-            <button
-              className="primary-button"
-              disabled={!allowed}
-              onClick={approve}
-            >
-              审核文案通过
-            </button>
+            {isApprover ? <button className="primary-button" disabled={!allowed} onClick={approve}>审核文案通过</button> : allowed ? <span className="review-handoff">文案确认将由审核人员完成。</span> : null}
           </div>
         </section>
         <IssuePanel issues={workspace.issues} />
@@ -691,13 +706,23 @@ export function ExportPage() {
 
 export function AuditPage() {
   const { workspace } = useWorkspace();
+  const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
+  const [category, setCategory] = useState("全部");
   if (!workspace) return <LoadingPage />;
+  const categories: Record<string, string[]> = {
+    全部: [], 审核: ["products_approved", "copy_approved"], 数据修改: ["product_updated", "sku_updated", "smart_fix_applied"], AI操作: ["copy_generation_completed"], 系统操作: ["parsing_completed", "source_uploaded"], 导出: ["export_created"],
+  };
+  const visibleLogs = category === "全部" ? workspace.audit_logs : workspace.audit_logs.filter((event) => categories[category].includes(event.action));
+  const selectedAudit =
+    visibleLogs.find((event) => event.id === selectedAuditId) ??
+    visibleLogs[0] ??
+    null;
   return (
-    <Shell eyebrow="审核记录" title="每一次决策都可追溯">
+    <Shell eyebrow="审核记录" title="操作与审核记录">
       <section className="panel audit-card">
         <div className="panel-title">
           <div>
-            <p className="eyebrow">任务历史</p>
+            <p className="eyebrow">每一次关键操作都可追溯</p>
             <h2>{workspace.task.task_name}</h2>
           </div>
           <Link
@@ -707,20 +732,28 @@ export function AuditPage() {
             返回审核工作台 →
           </Link>
         </div>
-        <div className="timeline">
-          {workspace.audit_logs.map((event) => (
-            <article key={event.id}>
-              <i></i>
-              <div>
-                <small>
-                  {formatTime(event.created_at)} ·{" "}
-                  {formatSourceRef(event.source_ref)}
-                </small>
-                <h3>{event.action}</h3>
-              </div>
-              <b>{event.actor_id ?? "系统"}</b>
-            </article>
-          ))}
+        <div className="audit-tabs" aria-label="记录分类">{Object.keys(categories).map((item) => <button type="button" key={item} aria-pressed={category === item} onClick={() => setCategory(item)}>{item}</button>)}</div>
+        <div className="audit-workbench">
+          <div className="timeline">
+            {visibleLogs.map((event) => (
+              <article
+                aria-pressed={selectedAudit?.id === event.id}
+                key={event.id}
+                onClick={() => setSelectedAuditId(event.id)}
+                role="button"
+                tabIndex={0}
+              >
+                <i></i>
+                <div>
+                  <small>{formatTime(event.created_at)}{event.source_ref ? ` · ${formatSourceRef(event.source_ref)}` : ""}</small>
+                  <h3>{auditActionLabel(event.action)}</h3>
+                </div>
+                <b>{event.actor_id === "system" || !event.actor_id ? "系统" : event.actor_id === "current-user" ? "当前用户" : event.actor_id}</b>
+              </article>
+            ))}
+            {visibleLogs.length === 0 ? <p className="empty">当前分类下没有记录。</p> : null}
+          </div>
+          <AuditDetailPanel event={selectedAudit} />
         </div>
       </section>
     </Shell>

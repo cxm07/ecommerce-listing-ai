@@ -20,9 +20,10 @@ describe('frontend workbench', () => {
     expect(html).toContain('审核工作台');
   });
 
-  it('labels the data source instead of claiming every new task is a mock', () => {
+  it('explains the fixed import template without exposing adapter implementation details', () => {
     const html = renderToStaticMarkup(<MemoryRouter><NewTaskPage /></MemoryRouter>);
-    expect(html).toContain('当前数据源：本地 Mock 适配器');
+    expect(html).toContain('当前使用固定的 MVP 商品导入模板');
+    expect(html).not.toContain('当前数据源');
   });
 
   it('shows the shared workflow progress at task creation', () => {
