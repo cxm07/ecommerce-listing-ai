@@ -72,7 +72,7 @@ class Issue:
 @dataclass
 class GeneratedContent:
     id: UUID; task_id: UUID; product_id: UUID; title: str; selling_points: list[str]; unsupported_claims: list[str]
-    model_metadata: dict[str, Any]; created_at: str = field(default_factory=now)
+    model_metadata: dict[str, Any]; created_at: str = field(default_factory=now); version: int = 1
 
 @dataclass
 class Approval:
@@ -416,8 +416,12 @@ class WorkflowApplication:
         sku.updated_at = now()
     def workspace(self, task_id: UUID) -> dict[str, Any]:
         with self.repository_factory.read_repository() as repo:
-            task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
-            return json_value({"task": asdict(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
+            return self._workspace_from_repo(repo, task_id)
+
+    @staticmethod
+    def _workspace_from_repo(repo: Any, task_id: UUID) -> dict[str, Any]:
+        task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
+        return json_value({"task": asdict(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
     def patch_product(self, product_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
         with self.repository_factory.unit_of_work() as uow:
             repo = uow.repository
@@ -455,8 +459,20 @@ class WorkflowApplication:
             self.transition(repo, task, TaskStatus.PRODUCT_APPROVED, "products_approved")
             uow.commit()
         return self.workspace(task_id)
-    @atomic
     def generate_copy(self, task_id: UUID) -> dict[str, Any]:
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository; task = repo.get_task(task_id)
+            if task.status != TaskStatus.PRODUCT_APPROVED: raise DomainError("INVALID_TASK_STATE", "Product approval is required.", 409)
+            if repo.list_generated_content(task_id): raise DomainError("CONTENT_ALREADY_EXISTS", "Copy has already been generated.", 409)
+            products = repo.list_products(task_id)
+            if not products: raise DomainError("PRODUCT_NOT_FOUND", "No products are available for copy generation.", 409)
+            for product in products:
+                repo.add_content(GeneratedContent(uuid4(), task_id, product.id, " ".join(value for value in [product.product_name, product.category] if value), [f"category: {product.category}"] if product.category else [], [], {"provider": "mock", "model": "deterministic-template-v1"}))
+            generating = self.workflow.transition(task.status, TaskStatus.GENERATING_COPY)
+            self.advance_task(repo, task, self.workflow.transition(generating, TaskStatus.WAITING_COPY_REVIEW))
+            self.audit(repo, task_id, "copy_generated")
+            uow.commit()
+        return self.workspace(task_id)
         task = self.repo.get_task(task_id)
         if task.status != TaskStatus.PRODUCT_APPROVED: raise DomainError("INVALID_TASK_STATE", "请先审核商品", 409)
         self.transition(task, TaskStatus.GENERATING_COPY, "copy_generation_started")
@@ -464,18 +480,42 @@ class WorkflowApplication:
             title = " · ".join(x for x in [product.product_name, product.category] if x)
             content = GeneratedContent(uuid4(), task_id, product.id, title, [f"类目：{product.category}"] if product.category else [], [], {"provider": "mock", "model": "deterministic-template-v1"}); self.repo.add_content(content)
         self.transition(task, TaskStatus.WAITING_COPY_REVIEW, "copy_generation_completed"); return self.workspace(task_id)
-    @atomic
     def approve_copy(self, task_id: UUID, comment: str | None) -> dict[str, Any]:
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository; task = repo.get_task(task_id)
+            if task.status != TaskStatus.WAITING_COPY_REVIEW: raise DomainError("INVALID_TASK_STATE", "Copy cannot be approved in the current state.", 409)
+            products, content = repo.list_products(task_id), repo.list_generated_content(task_id)
+            if not content or {item.product_id for item in content} != {item.id for item in products}: raise DomainError("CONTENT_NOT_FOUND", "Complete generated content is required.", 409)
+            repo.add_approval(Approval(uuid4(), task_id, self.actor_id, "copy", "approved", comment))
+            self.transition(repo, task, TaskStatus.APPROVED, "copy_approved")
+            uow.commit()
+        return self.workspace(task_id)
         task = self.repo.get_task(task_id)
         if task.status != TaskStatus.WAITING_COPY_REVIEW: raise DomainError("INVALID_TASK_STATE", "当前状态不能审核文案", 409)
         if not self.repo.list_generated_content(task_id): raise DomainError("CONTENT_NOT_FOUND", "没有可审核文案", 409)
         approval = Approval(uuid4(), task_id, self.actor_id, "copy", "approved", comment); self.repo.add_approval(approval); self.transition(task, TaskStatus.APPROVED, "copy_approved"); return self.workspace(task_id)
-    @atomic
     def export(self, task_id: UUID) -> TaskFile:
+        with self.repository_factory.unit_of_work() as uow:
+            repo = uow.repository; task = repo.get_task(task_id)
+            if task.status != TaskStatus.APPROVED: raise DomainError("INVALID_TASK_STATE", "Export is not allowed in the current state.", 409)
+            products, content = repo.list_products(task_id), repo.list_generated_content(task_id)
+            if not content or {item.product_id for item in content} != {item.id for item in products}: raise DomainError("CONTENT_NOT_FOUND", "Complete generated content is required for export.", 409)
+            item = TaskFile(uuid4(), task_id, self.storage.save("export", self.writer.export(self._workspace_from_repo(repo, task_id))), f"listing-{task_id}.xlsx", "export")
+            repo.add_file(item)
+            self.transition(repo, task, TaskStatus.EXPORTED, "export_created")
+            uow.commit()
+            return item
         task = self.repo.get_task(task_id)
         if task.status != TaskStatus.APPROVED: raise DomainError("INVALID_TASK_STATE", "当前状态不能导出", 409)
         item = TaskFile(uuid4(), task_id, self.storage.save("export", self.writer.export(self.workspace(task_id))), f"listing-{task_id}.xlsx", "export"); self.repo.add_file(item); self.transition(task, TaskStatus.EXPORTED, "export_created"); return item
     def download(self, task_id: UUID) -> tuple[TaskFile, bytes]:
+        with self.repository_factory.read_repository() as repo:
+            task = repo.get_task(task_id)
+            if task.status != TaskStatus.EXPORTED: raise DomainError("INVALID_TASK_STATE", "Download is not allowed in the current state.", 409)
+            items = [item for item in repo.list_task_files(task_id) if item.file_kind == "export"]
+            if not items: raise DomainError("EXPORT_NOT_FOUND", "Export file was not found.", 404)
+            item = max(items, key=lambda x: x.created_at)
+        return item, self.storage.read(item.storage_path)
         task = self.repo.get_task(task_id)
         if task.status != TaskStatus.EXPORTED: raise DomainError("INVALID_TASK_STATE", "当前状态不能下载", 409)
         items = [item for item in self.repo.list_task_files(task_id) if item.file_kind == "export"]

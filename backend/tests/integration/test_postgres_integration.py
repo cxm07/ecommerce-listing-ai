@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from openpyxl import load_workbook
 
 from app.core import DomainError, LocalFileStorage, WorkflowApplication
 from app.persistence import PostgresRepositoryFactory
@@ -316,3 +318,26 @@ def test_postgres_approve_products_rolls_back_on_version_conflict(postgres_facto
         assert repo.get_task(task.id).status == TaskStatus.WAITING_PRODUCT_REVIEW
         assert repo.get_task(task.id).version == 6
         assert repo.list_approvals(task.id) == []
+
+
+@pytest.mark.postgres_integration
+def test_complete_v1_workflow_with_postgres(workflow: WorkflowApplication, postgres_factory: PostgresRepositoryFactory, sample_workbook: bytes) -> None:
+    task, workspace = _review_ready(workflow, sample_workbook)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    workflow.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "TSHIRT-WHITE-XL"})
+    workflow.patch_sku(UUID(invalid_price["sku_id"]), {"price": Decimal("79.90")})
+    workflow.approve_products(task.id, "products approved")
+    generated = workflow.generate_copy(task.id)
+    assert len(generated["generated_content"]) == len(generated["products"])
+    workflow.approve_copy(task.id, "copy approved")
+    exported = workflow.export(task.id)
+    item, payload = workflow.download(task.id)
+    assert item.id == exported.id
+    assert set(load_workbook(BytesIO(payload)).sheetnames) == {"products", "skus", "listing-copy", "issues", "audit-summary"}
+    rebuilt = WorkflowApplication(postgres_factory, workflow.storage, workflow.actor_id, workflow.max_upload_bytes)
+    restored = rebuilt.workspace(task.id)
+    assert restored["task"]["status"] == TaskStatus.EXPORTED.value
+    assert restored["task"]["version"] == 9
+    assert len(restored["generated_content"]) == len(restored["products"])
+    assert {approval["approval_type"] for approval in restored["approvals"]} == {"product", "copy"}
