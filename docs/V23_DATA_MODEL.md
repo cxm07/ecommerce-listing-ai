@@ -24,16 +24,16 @@ This is a design contract, not a database migration. All timestamps are UTC ISO 
 
 | Entity | Key fields and constraints | Status |
 | --- | --- | --- |
-| Profile | `id uuid PK`, `auth_subject unique`, `display_name`, `created_at`. | Technical proposal. |
-| RoleAssignment | `id PK`, `profile_id FK`, `role`, `scope`, `created_at`; unique `(profile_id, role, scope)`. | Business role names are an assumption. |
+| Profile | `id uuid PK`, `auth_subject unique` from Supabase Auth, `display_name`, `created_at`. | Confirmed V2 identity-provider rule. |
+| RoleAssignment | `id PK`, `profile_id FK`, `role`, `scope`, `created_at`; unique `(profile_id, role, scope)`; allowed roles are `operator`, `reviewer`, `admin`. | Confirmed default roles; scope details remain a later authorization design decision. |
 | Template | `id PK`, `name unique`, `kind`, `archived_at`. | Technical proposal. |
 | TemplateVersion | `id PK`, `template_id FK`, `version integer`, `schema jsonb`, `created_at`; unique `(template_id, version)`, immutable after publish. | Technical rule. |
 | TemplateField | `id PK`, `template_version_id FK`, `field_key`, `label`, `required`, `data_type`, `position`; unique `(template_version_id, field_key)`. | Technical proposal. |
 | FieldMapping | `id PK`, `template_version_id FK`, `direction`, `mapping jsonb`, `created_at`; immutable version snapshot. | Technical rule. |
 | ExportProfile | `id PK`, `name`, `target`, `template_version_id FK`, `archived_at`; unique active name/target. | Target platforms are assumptions. |
 | ExportRecord | `id PK`, `task_id FK`, `export_profile_id FK`, `storage_key`, `content_hash`, `created_at`. | Technical proposal. |
-| ModelRun | `id PK`, `task_id FK`, `provider`, `model`, `input_hash`, `output_hash`, `status`, `created_at`. | Provider selection is an assumption. |
-| IntegrationRun | `id PK`, `task_id FK`, `connector`, `mode`, `request_snapshot jsonb`, `result_snapshot jsonb`, `confirmed_at`; mode is `dry_run` or `confirmed`. | Technical rule. |
+| ModelRun | `id PK`, `task_id FK`, `provider`, `model`, `input_hash`, `output_hash`, `status`, `created_at`; supports deterministic and replaceable LLM implementations. | Concrete LLM provider/model is deferred. |
+| IntegrationRun | `id PK`, `task_id FK`, `connector`, `mode`, `request_snapshot jsonb`, `result_snapshot jsonb`, `confirmed_at`; mode is `dry_run` or `confirmed`. | Confirmed V3 rule; `admin` only may execute a confirmed external action. |
 | IdempotencyRecord | `id PK`, `actor_id`, `key`, `request_hash`, `response_snapshot jsonb`, `expires_at`; unique `(actor_id, key)`. | TTL is an assumption. |
 
 ## Relationship, indexes, and lifecycle rules
@@ -42,9 +42,9 @@ This is a design contract, not a database migration. All timestamps are UTC ISO 
 - TaskFile references Task and an immutable storage key. The original filename is metadata, never a storage path.
 - TemplateVersion, FieldMapping and successful ExportRecord snapshots are immutable. Revisions create new records instead of rewriting history.
 - JSONB is reserved for variable schemas, mapping expressions, source payloads, and provider/connector snapshots; query-critical facts remain typed columns.
-- AuditLog is append-only. Archive/restore events are audit entries, not deletions.
+- AuditLog is append-only. Archive/restore events are audit entries, not deletions; V2–V3 does not expose a runtime permanent-deletion operation for business data.
 - Foreign keys are restrictive for historical records; any cascade behavior requires an explicit retention decision.
 
 ## Confirmed technical rules vs MVP assumptions
 
-Confirmed technical rules are UUID identity, UTC time, immutable audit/version snapshots, structured `source_ref`, typed numeric price, and non-destructive archival. Assumptions pending business confirmation are role names, platform targets, data retention, export profile ownership, provider choice, retry windows, and connector confirmation authority.
+Confirmed technical rules are Supabase Auth identity, the three default roles, UUID identity, UTC time, immutable audit/version snapshots, structured `source_ref`, typed numeric price, and archive/restore rather than runtime permanent deletion. The concrete LLM supplier/model, external platform targets, retention duration, retry window, scope model, and human-confirmation evidence remain later decisions.

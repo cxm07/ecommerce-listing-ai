@@ -34,7 +34,17 @@ M0 includes representative payloads for the authentication, task list, needs-rev
 
 ## Role and state matrix
 
-Role names are assumptions pending product confirmation. A proposed `operator` may create/upload/edit; a proposed `reviewer` may approve product/copy; a proposed `admin` may manage templates/profiles and confirm integrations. No role bypasses the existing state machine. Connector dry-run is non-mutating; connector confirmation additionally needs explicit authorized-human evidence.
+Supabase Auth is the V2 identity provider. The confirmed role defaults are below; every allowed operation still enforces the existing task state and approval gates through `WorkflowService`.
+
+| Operation | operator | reviewer | admin |
+| --- | --- | --- | --- |
+| Create task, upload file, edit Product/SKU | yes | yes | yes |
+| Approve products or copy | no | yes | yes |
+| Generate copy, export approved result | yes | yes | yes |
+| Create/modify/version/enable templates and create/modify ExportProfiles | no | no | yes |
+| Execute a confirmed external Connector action | no | no | yes |
+
+Operator and reviewer may select enabled templates and ExportProfiles but cannot change them. V2–V3 has archive/restore only and no runtime permanent-delete operation for business data. Connector dry-run and parameter preview are non-mutating. `NoopConnector` is the initial V3 implementation; no ERP or platform is named until a later milestone confirms its contract. A concrete LLM provider/model also remains a later ModelProvider-milestone decision; the boundary must retain `DeterministicModelProvider` and a replaceable `LLMModelProvider`.
 
 ## Integration sequence
 
