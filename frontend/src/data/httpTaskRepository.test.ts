@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createHttpTaskRepository } from './httpTaskRepository';
+import { authUnauthorizedEvent } from '../auth/authEvents';
 
 const envelope = (status: 'success' | 'needs_review' | 'failed', data: unknown, issues: unknown[] = [], error: unknown = null) => ({ status, data, issues, error });
 
@@ -29,6 +30,17 @@ describe('HTTP task repository', () => {
   it('maps only fetch failures to NETWORK_ERROR', async () => {
     const repository = createHttpTaskRepository({ baseUrl: 'http://localhost:8000', fetchFn: vi.fn().mockRejectedValue(new Error('connection refused')) });
     await expect(repository.listTasks()).resolves.toMatchObject({ status: 'failed', data: null, issues: [], error: { code: 'NETWORK_ERROR', details: null } });
+  });
+
+  it('emits an authorization event for a 401 envelope', async () => {
+    const listener = vi.fn();
+    window.addEventListener(authUnauthorizedEvent, listener);
+    const repository = createHttpTaskRepository({ baseUrl: 'http://localhost:8000', fetchFn: vi.fn().mockResolvedValue(new Response(JSON.stringify(envelope('failed', null, [], { code: 'AUTHENTICATION_REQUIRED', message: 'Login required', details: null })), { status: 401, headers: { 'Content-Type': 'application/json' } })) });
+
+    await repository.listTasks();
+
+    expect(listener).toHaveBeenCalledOnce();
+    window.removeEventListener(authUnauthorizedEvent, listener);
   });
 
   it('returns the original ParseResult without a workspace follow-up request', async () => {

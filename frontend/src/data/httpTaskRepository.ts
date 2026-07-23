@@ -1,4 +1,5 @@
 import type { ApiResponse, Issue, ParseResult, Task, TaskWorkspace } from '../domain/contracts';
+import { notifyUnauthorized } from '../auth/authEvents';
 import type { TaskRepository } from './mockTaskRepository';
 
 type FetchLike = typeof fetch;
@@ -55,6 +56,7 @@ export function createHttpTaskRepository({ baseUrl, fetchFn = fetch }: HttpTaskR
     try {
       const response = await fetchFn(`${baseUrl.replace(/\/$/, '')}${path}`, init);
       const { payload, responseText } = await readEnvelope<T>(response);
+      if (response.status === 401 || payload?.error?.code === 'AUTHENTICATION_REQUIRED') notifyUnauthorized();
       return payload ?? httpFailure<T>(response, responseText);
     } catch {
       return networkFailure<T>();

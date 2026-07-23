@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useOptionalAuth } from "./auth/AuthProvider";
 import type {
   ApiResponse,
   Issue,
@@ -85,6 +86,7 @@ function Shell({
             activeWhen={(path) => path.includes("/audit")}
           />
         </nav>
+        <UserNav />
         <div className="sidebar-foot">
           MVP · 前端演示
           <br />
@@ -101,6 +103,29 @@ function Shell({
         </header>
         {children}
       </main>
+    </div>
+  );
+}
+function UserNav() {
+  const auth = useOptionalAuth();
+  if (!auth?.session) return null;
+  const roleLabels: Record<string, string> = {
+    operator: "运营人员",
+    reviewer: "审核人员",
+    admin: "管理员",
+  };
+  return (
+    <div className="current-user">
+      <span className="user-avatar">{auth.session.user.display_name.slice(0, 1)}</span>
+      <div>
+        <b>{auth.session.user.display_name}</b>
+        <small data-testid="current-user-role">
+          {auth.session.user.roles.map((role) => roleLabels[role] ?? role).join("、")}
+        </small>
+      </div>
+      <button type="button" onClick={() => void auth.signOut()}>
+        退出
+      </button>
     </div>
   );
 }
