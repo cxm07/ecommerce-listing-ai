@@ -144,7 +144,10 @@ class SupabaseStorageAdapter(StorageAdapter):
 
     def read(self, path: str) -> bytes:
         response = self._request("GET", path)
-        if response.status_code == 404:
+        # The disposable Storage service reports an absent private object as
+        # 400, while hosted deployments commonly use 404.  Paths are already
+        # server-generated and validated, so both mean the same domain state.
+        if response.status_code in {400, 404}:
             raise DomainError("FILE_NOT_FOUND", "文件不存在", 404)
         if response.is_error:
             raise DomainError("STORAGE_UNAVAILABLE", "对象存储读取失败", 503)
@@ -174,7 +177,7 @@ class SupabaseStorageAdapter(StorageAdapter):
 
     def exists(self, path: str) -> bool:
         response = self._request("GET", path)
-        if response.status_code == 404:
+        if response.status_code in {400, 404}:
             return False
         if response.is_error:
             raise DomainError("STORAGE_UNAVAILABLE", "对象存储检查失败", 503)

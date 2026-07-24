@@ -70,6 +70,11 @@ def test_supabase_maps_duplicate_timeout_and_delete_failure() -> None:
     with pytest.raises(DomainError) as error:
         bad_delete.delete(f"tasks/{uuid4()}/exports/{uuid4()}/listing.xlsx")
     assert error.value.code == "STORAGE_COMPENSATION_FAILED"
+    missing = SupabaseStorageAdapter("http://storage.test", "secret", "task-files", transport=httpx.MockTransport(lambda request: httpx.Response(400, request=request)))
+    assert not missing.exists(f"tasks/{uuid4()}/exports/{uuid4()}/listing.xlsx")
+    with pytest.raises(DomainError) as error:
+        missing.read(f"tasks/{uuid4()}/exports/{uuid4()}/listing.xlsx")
+    assert error.value.code == "FILE_NOT_FOUND"
 
 
 def test_storage_factory_validates_modes_and_required_supabase_configuration(tmp_path: Path) -> None:
