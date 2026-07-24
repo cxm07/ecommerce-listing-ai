@@ -132,7 +132,7 @@ class PostgresRepository:
 
     def list_task_files(self, task_id: UUID) -> list[TaskFile]:
         rows = self._cursor().execute("select * from public.task_files where task_id=%s order by created_at", (task_id,)).fetchall()
-        return [TaskFile(r["id"], r["task_id"], r["storage_path"], r["original_filename"], r["file_kind"], r["created_at"].isoformat()) for r in rows]
+        return [TaskFile(r["id"], r["task_id"], r["storage_path"], r["original_filename"], r["file_kind"], r["created_at"].isoformat(), r["size_bytes"], r["content_hash"], r["mime_type"]) for r in rows]
 
     def list_products(self, task_id: UUID) -> list[Product]:
         rows = self._cursor().execute("select id from public.products where task_id=%s order by created_at", (task_id,)).fetchall()
@@ -162,7 +162,7 @@ class PostgresRepository:
         row=self._cursor().execute("select * from public.issues where issue_signature=%s",(signature,)).fetchone()
         return None if row is None else Issue(row["id"],row["task_id"],row["product_id"],row["sku_id"],row["code"],row["field"],row["severity"],row["message"],row["source_ref"],row["issue_signature"],row["resolved"],row["created_at"].isoformat())
 
-    def add_file(self, x: TaskFile) -> None: self._cursor().execute("insert into public.task_files(id,task_id,storage_path,original_filename,file_kind,size_bytes,created_by,created_at) values(%s,%s,%s,%s,%s,0,%s,%s)",(x.id,x.task_id,x.storage_path,x.original_filename,x.file_kind,self._actor(),x.created_at))
+    def add_file(self, x: TaskFile) -> None: self._cursor().execute("insert into public.task_files(id,task_id,storage_path,original_filename,file_kind,content_hash,mime_type,size_bytes,created_by,created_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.storage_path,x.original_filename,x.file_kind,x.content_hash,x.mime_type,x.size_bytes,self._actor(),x.created_at))
     def add_product(self, x: Product) -> None: self._cursor().execute("insert into public.products(id,task_id,product_name,category,material,source_row,source_payload,created_by,updated_by,created_at,updated_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.product_name,x.category,x.material,x.source_row,Jsonb(x.source_payload),self._actor(),self._actor(),x.created_at,x.updated_at))
     def add_sku(self, x: SKU) -> None: self._cursor().execute("insert into public.skus(id,product_id,sku_code,color,size,price,stock,source_row,source_payload,created_by,updated_by,created_at,updated_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.product_id,x.sku_code,x.color,x.size,x.price,x.stock,x.source_row,Jsonb(x.source_payload),self._actor(),self._actor(),x.created_at,x.updated_at))
     def add_issue(self, x: Issue) -> None: self._cursor().execute("insert into public.issues(id,task_id,product_id,sku_id,issue_signature,code,field,severity,message,source_ref,resolved,created_at) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",(x.id,x.task_id,x.product_id,x.sku_id,x.signature,x.code,x.field,x.severity,x.message,Jsonb(x.source_ref),x.resolved,x.created_at))

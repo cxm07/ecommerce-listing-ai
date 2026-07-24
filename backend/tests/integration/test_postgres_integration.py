@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from app.config import Settings
-from app.core import DomainError, LocalFileStorage, WorkflowApplication
+from app.core import DomainError, WorkflowApplication
+from app.storage import LocalStorageAdapter
 from app.main import create_app
 from app.persistence import PostgresRepositoryFactory
 from app.workflow import TaskStatus
@@ -47,7 +48,7 @@ def postgres_factory() -> PostgresRepositoryFactory:
 
 @pytest.fixture
 def workflow(postgres_factory: PostgresRepositoryFactory, tmp_path: Path) -> WorkflowApplication:
-    return WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    return WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
 
 
 @pytest.fixture
@@ -97,7 +98,7 @@ def test_postgres_upload_rolls_back_when_audit_fails(workflow: WorkflowApplicati
         assert repo.get_task(task.id).version == 1
         assert repo.list_task_files(task.id) == []
         assert [event.action for event in repo.list_audit_logs(task.id)] == ["task_created"]
-    assert not list((workflow.storage.root / "sources").glob("*.xlsx"))
+    assert not list((workflow.storage.root / "tasks").rglob("source.xlsx"))
 
 
 class _ConflictingWorkflow(WorkflowApplication):
@@ -111,7 +112,7 @@ class _ConflictingWorkflow(WorkflowApplication):
 
 @pytest.mark.postgres_integration
 def test_postgres_upload_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
-    workflow = _ConflictingWorkflow(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    workflow = _ConflictingWorkflow(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     task = workflow.create_task("Conflict", "test")
     with pytest.raises(DomainError, match="其他请求"):
         workflow.upload(task.id, "sample-products.xlsx", sample_workbook)
@@ -120,7 +121,7 @@ def test_postgres_upload_rolls_back_on_version_conflict(postgres_factory: Postgr
         assert repo.get_task(task.id).version == 2  # only the competing connection advanced it
         assert repo.list_task_files(task.id) == []
         assert [event.action for event in repo.list_audit_logs(task.id)] == ["task_created"]
-    assert not list((tmp_path / "sources").glob("*.xlsx"))
+    assert not list((tmp_path / "tasks").rglob("source.xlsx"))
 
 
 @pytest.mark.postgres_integration
@@ -129,7 +130,7 @@ def test_postgres_parse_persists_complete_aggregate_and_rebuilds_application(wor
     workflow.upload(task.id, "sample-products.xlsx", sample_workbook)
     summary = workflow.parse(task.id)
     assert summary == {"product_count": 1, "sku_count": 6, "issue_count": 5, "error_count": 2, "warning_count": 2, "info_count": 1}
-    rebuilt = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    rebuilt = WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     workspace = rebuilt.workspace(task.id)
     assert set(workspace) == {"task", "files", "products", "skus", "issues", "generated_content", "approvals", "audit_logs"}
     assert workspace["task"]["status"] == TaskStatus.WAITING_PRODUCT_REVIEW.value
@@ -156,10 +157,10 @@ def test_postgres_parse_rolls_back_on_audit_failure(workflow: WorkflowApplicatio
 
 @pytest.mark.postgres_integration
 def test_postgres_parse_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
-    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    normal = WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     task = normal.create_task("Parse conflict", "test")
     normal.upload(task.id, "sample-products.xlsx", sample_workbook)
-    workflow = _ConflictingWorkflow(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    workflow = _ConflictingWorkflow(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     with pytest.raises(DomainError, match="其他请求"):
         workflow.parse(task.id)
     with postgres_factory.read_repository() as repo:
@@ -229,7 +230,7 @@ def test_postgres_patch_product_rolls_back_when_audit_fails(workflow: WorkflowAp
 
 @pytest.mark.postgres_integration
 def test_postgres_patch_product_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
-    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    normal = WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     task, workspace = _review_ready(normal, sample_workbook)
     conflicting = _ConflictingWorkflow(postgres_factory, normal.storage, normal.actor_id, normal.max_upload_bytes)
     with pytest.raises(DomainError, match="其他请求"):
@@ -259,7 +260,7 @@ def test_postgres_patch_sku_updates_issues_and_preserves_decimal(workflow: Workf
 
 @pytest.mark.postgres_integration
 def test_postgres_patch_sku_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
-    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    normal = WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     task, workspace = _review_ready(normal, sample_workbook)
     target = workspace["skus"][0]
     conflicting = _ConflictingWorkflow(postgres_factory, normal.storage, normal.actor_id, normal.max_upload_bytes)
@@ -331,7 +332,7 @@ def test_postgres_approve_products_rolls_back_when_audit_fails(workflow: Workflo
 
 @pytest.mark.postgres_integration
 def test_postgres_approve_products_rolls_back_on_version_conflict(postgres_factory: PostgresRepositoryFactory, tmp_path: Path, sample_workbook: bytes) -> None:
-    normal = WorkflowApplication(postgres_factory, LocalFileStorage(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
+    normal = WorkflowApplication(postgres_factory, LocalStorageAdapter(tmp_path), str(postgres_factory.actor_id), 10 * 1024 * 1024)
     task, workspace = _review_ready(normal, sample_workbook)
     duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
     invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")

@@ -31,7 +31,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -e ".[dev]"
         working-directory: backend
-      - run: pytest -q -m "not postgres_integration"
+      - run: pytest -q -m "not postgres_integration and not storage_integration"
         working-directory: backend
 
   database-schema:
@@ -58,6 +58,17 @@ jobs:
           DATA_REPOSITORY: postgres
           APP_ENV: test
         run: pytest -q -m postgres_integration
+      - name: Run Supabase Storage integration tests
+        working-directory: backend
+        env:
+          SUPABASE_DB_URL: ${{ env.DB_URL }}
+          SUPABASE_URL: ${{ env.API_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ env.SERVICE_ROLE_KEY }}
+          SUPABASE_STORAGE_BUCKET: task-files
+          FILE_STORAGE: supabase
+          DATA_REPOSITORY: postgres
+          APP_ENV: test
+        run: pytest -q -m storage_integration
       - name: Run schema assertions through local Postgres
         run: |
           db_container="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
