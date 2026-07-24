@@ -408,6 +408,7 @@ export function ProcessingPage() {
 export function ProductReviewPage() {
   const { taskId, workspace, setWorkspace, message, setMessage } =
     useWorkspace();
+  const navigate = useNavigate();
   const [editingSkuId, setEditingSkuId] = useState<string | null>(null);
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
   const auth = useOptionalAuth();
@@ -423,6 +424,23 @@ export function ProductReviewPage() {
       setWorkspace({ ...result.data });
       setMessage("商品审核已通过，请生成文案后进行审核。");
     } else setMessage(result.error?.message ?? "暂时不能审核");
+  };
+  const simulateApprovalAndGenerateCopy = async () => {
+    const approval = await taskRepository.approveProducts(taskId);
+    if (!approval.data) {
+      setMessage(approval.error?.message ?? "暂时不能模拟审核");
+      return;
+    }
+
+    setWorkspace({ ...approval.data });
+    const generation = await taskRepository.generateCopy(taskId);
+    if (!generation.data) {
+      setMessage(generation.error?.message ?? "商品已通过，但暂时不能生成文案");
+      return;
+    }
+
+    setWorkspace({ ...generation.data });
+    navigate(`/tasks/${taskId}/copy`, { replace: true });
   };
   const saveProduct = async (
     productId: string,
@@ -508,9 +526,15 @@ export function ProductReviewPage() {
                   ? `还有 ${openErrors} 个错误需要处理`
                   : "数据已满足审核条件"}
               </b>
-              <small>{message || "修正事实后由后端重新检测问题。"}</small>
+              <small>{message || (!isApiMode && openErrors === 0 ? "演示环境可模拟审核通过，并自动生成文案。" : "修正事实后由后端重新检测问题。")}</small>
             </div>
-            {isApprover ? <button className="primary-button" disabled={openErrors > 0 || workspace.task.status !== "WAITING_PRODUCT_REVIEW"} onClick={approve}>审核商品通过</button> : <span className="review-handoff">商品修正完成后，将由审核人员确认通过。</span>}
+            {isApprover ? (
+              <button className="primary-button" disabled={openErrors > 0 || workspace.task.status !== "WAITING_PRODUCT_REVIEW"} onClick={approve}>审核商品通过</button>
+            ) : !isApiMode ? (
+              <button className="primary-button" disabled={openErrors > 0 || workspace.task.status !== "WAITING_PRODUCT_REVIEW"} onClick={simulateApprovalAndGenerateCopy}>模拟审核通过并生成文案</button>
+            ) : (
+              <span className="review-handoff">商品修正完成后，将由审核人员确认通过。</span>
+            )}
           </div>
         </section>
         <aside className="review-sidebar">

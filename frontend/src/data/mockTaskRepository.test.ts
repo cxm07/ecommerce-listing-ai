@@ -66,4 +66,20 @@ describe('mock task repository', () => {
     expect(result.data?.audit_logs[0]?.action).toBe('smart_fix_applied');
     expect(result.data?.skus.find((sku) => sku.id === 'sku-5')?.price).toBeNull();
   });
+
+  it('advances an issue-free product review through copy generation using workflow actions', async () => {
+    const repository = createMockTaskRepository();
+
+    await repository.updateSku('sku-4', { sku_code: 'TSHIRT-WHITE-M-2' });
+    await repository.updateSku('sku-5', { color: '蓝色', price: 75 });
+    await repository.updateSku('sku-6', { stock: 6 });
+    await repository.applySafeFixes('task-demo');
+
+    const approval = await repository.approveProducts('task-demo');
+    expect(approval.data?.task.status).toBe('PRODUCT_APPROVED');
+
+    const generation = await repository.generateCopy('task-demo');
+    expect(generation.data?.task.status).toBe('WAITING_COPY_REVIEW');
+    expect(generation.data?.generated_content).toHaveLength(1);
+  });
 });
