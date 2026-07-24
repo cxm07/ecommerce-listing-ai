@@ -379,6 +379,9 @@ export function ProcessingPage() {
     unresolvedErrorCount: errors(workspace.issues),
     taskId: workspace.task.id,
   });
+  if (!awaitingReviewData && action.href !== `/tasks/${taskId}/processing`) {
+    return <Navigate replace to={action.href} />;
+  }
   return (
     <AppShell eyebrow="处理进度" title="解析与标准化">
       <section className="progress-card">
@@ -671,33 +674,54 @@ export function ExportPage() {
   };
   if (!workspace) return <LoadingPage />;
   const exported = workspace.task.status === "EXPORTED";
+  const generatedContent = workspace.generated_content[0];
   return (
     <AppShell eyebrow="导出结果" title="准备交付上新资料">
-      <section className="export-card">
-        <div className="export-icon">↓</div>
-        <p className="eyebrow">最终交付</p>
-        <h2>{exported ? "上新文件已生成" : "等待审核完成"}</h2>
-        <p>
-          {message ||
-            (exported
-              ? "可下载真实 Excel 导出文件。"
-              : "商品和文案均审核通过后，才会开放导出。")}
-        </p>
-        {exported ? (
-          <button className="primary-button" onClick={download}>
-            下载导出结果
-          </button>
-        ) : (
-          <button className="primary-button" disabled onClick={doExport}>
-            导出上新文件
-          </button>
-        )}
-        {workspace.task.status === "APPROVED" && (
-          <button className="soft-button" onClick={doExport}>
-            生成上新文件
-          </button>
-        )}
-      </section>
+      <div className="export-workspace">
+        <section className="export-card">
+          <div className="export-icon">↓</div>
+          <p className="eyebrow">最终交付</p>
+          <h2>{exported ? "上新文件已生成" : "已完成审核，等待导出"}</h2>
+          <p>
+            {message ||
+              (exported
+                ? "可下载真实 Excel 导出文件。"
+                : "已在右侧确认本次 AI 生成的文案；确认无误后即可生成上新文件。")}
+          </p>
+          {exported ? (
+            <button className="primary-button" onClick={download}>
+              下载导出结果
+            </button>
+          ) : (
+            <button className="primary-button" disabled onClick={doExport}>
+              导出上新文件
+            </button>
+          )}
+          {workspace.task.status === "APPROVED" && (
+            <button className="soft-button" onClick={doExport}>
+              生成上新文件
+            </button>
+          )}
+        </section>
+        <section className="panel export-copy-summary" aria-label="已审核的 AI 文案">
+          <p className="eyebrow">已审核的 AI 文案</p>
+          <h2>{generatedContent?.title ?? "尚未生成可导出的文案"}</h2>
+          <h3>卖点建议</h3>
+          {generatedContent?.selling_points.length ? (
+            <ul>{generatedContent.selling_points.map((point) => <li key={point}>{point}</li>)}</ul>
+          ) : (
+            <p className="muted">本次没有额外卖点建议。</p>
+          )}
+          <div className="claim-box">
+            <b>风险提示</b>
+            {generatedContent?.unsupported_claims.length ? (
+              generatedContent.unsupported_claims.map((claim) => <span key={claim}>{claim}</span>)
+            ) : (
+              <span>未发现待确认表述</span>
+            )}
+          </div>
+        </section>
+      </div>
     </AppShell>
   );
 }
