@@ -9,12 +9,15 @@ export function ProductEditor({ product, onSave }: { product: EditableProduct; o
   const [editing, setEditing] = useState(false);
   const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { await onSave(product.id, values); setEditing(false); } finally { setSaving(false); } };
   if (!editing) return <section className="product-facts" aria-label="商品事实">
-    <dl>
+    <dl className="product-facts-ledger" data-testid="product-facts-ledger">
       <div><dt>商品名称</dt><dd>{values.product_name || '待补充'}</dd></div>
       <div><dt>类目</dt><dd>{values.category || '待补充'}</dd></div>
       <div><dt>材质</dt><dd>{values.material || '待补充'}</dd></div>
     </dl>
-    <button className="soft-button" type="button" onClick={() => setEditing(true)}>编辑商品</button>
+    <div className="product-facts-action">
+      <p>需要修正商品事实时，再进入编辑模式。</p>
+      <button className="soft-button" type="button" onClick={() => setEditing(true)}>编辑商品</button>
+    </div>
   </section>;
   return <form className="product-editor" onSubmit={submit}>
     <label>商品名称<input value={values.product_name} onChange={(event) => setValues({ ...values, product_name: event.target.value })} /></label>
