@@ -43,7 +43,8 @@ def test_supabase_requests_use_private_headers_and_stable_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
         if request.method == "DELETE": return httpx.Response(404, request=request)
-        if request.method == "HEAD": return httpx.Response(404, request=request)
+        if request.method == "GET" and len([item for item in captured if item.method == "GET"]) == 2:
+            return httpx.Response(404, request=request)
         return httpx.Response(200, request=request, content=b"PKstored")
     storage = SupabaseStorageAdapter("http://storage.test", "service-role-secret", "task-files", transport=httpx.MockTransport(handler))
     item = storage.put_source(uuid4(), uuid4(), "input.xlsx", b"PKbody")
