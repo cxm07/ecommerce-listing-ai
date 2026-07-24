@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -25,3 +25,19 @@ def test_command_failure_does_not_leave_task_or_audit(tmp_path) -> None:
     with pytest.raises(DomainError):
         service.create_task("", "category")
     assert service.list_tasks() == []
+
+
+def test_memory_review_commands_advance_task_version(tmp_path, sample_workbook: bytes) -> None:
+    service = WorkflowApplication(MemoryRepository(), LocalFileStorage(tmp_path), str(uuid4()), 1024 * 1024)
+    task = service.create_task("review", "category")
+    service.upload(task.id, "sample-products.xlsx", sample_workbook)
+    service.parse(task.id)
+    workspace = service.workspace(task.id)
+    duplicate = next(item for item in workspace["issues"] if item["code"] == "DUPLICATE_SKU")
+    invalid_price = next(item for item in workspace["issues"] if item["code"] == "INVALID_PRICE")
+    service.patch_product(UUID(workspace["products"][0]["id"]), {"material": "cotton"})
+    service.patch_sku(UUID(duplicate["sku_id"]), {"sku_code": "unique-code"})
+    service.patch_sku(UUID(invalid_price["sku_id"]), {"price": "79.90"})
+    approved = service.approve_products(task.id, "ok")
+    assert approved["task"]["status"] == "PRODUCT_APPROVED"
+    assert service.get_task(task.id).version == 7

@@ -27,6 +27,27 @@ def test_create_list_get_and_not_found_use_contract(client: TestClient) -> None:
     assert missing.json()["error"]["code"] == "TASK_NOT_FOUND"
 
 
+def test_public_task_responses_do_not_expose_persistence_version(client: TestClient) -> None:
+    expected = {"id", "task_name", "category", "creator_id", "status", "created_at", "updated_at"}
+    task = create_task(client)
+    task_id = task["id"]
+    responses = [
+        client.post("/api/tasks", json={"task_name": "第二个任务", "category": "服饰"}),
+        client.get("/api/tasks"),
+        client.get(f"/api/tasks/{task_id}"),
+        client.get(f"/api/tasks/{task_id}/workspace"),
+    ]
+    values = [
+        responses[0].json()["data"],
+        responses[1].json()["data"]["items"][0],
+        responses[2].json()["data"],
+        responses[3].json()["data"]["task"],
+    ]
+    for value in values:
+        assert set(value) == expected
+        assert "version" not in value
+
+
 def test_business_input_and_illegal_state_are_distinct(client: TestClient) -> None:
     bad_input = client.post("/api/tasks", json={"task_name": " ", "category": "服饰"})
     assert bad_input.status_code == 400

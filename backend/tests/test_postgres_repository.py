@@ -4,12 +4,12 @@ import pytest
 
 from app.config import Settings
 from app.core import DomainError
-from app.persistence import PostgresRepository, StaticActorProvider
+from app.persistence import PostgresRepositoryFactory, StaticActorProvider
 
 
 def test_postgres_repository_requires_connection_string() -> None:
     with pytest.raises(DomainError, match="SUPABASE_DB_URL"):
-        PostgresRepository("", UUID("00000000-0000-0000-0000-000000000001"))
+        PostgresRepositoryFactory("", UUID("00000000-0000-0000-0000-000000000001"))
 
 
 def test_static_actor_is_not_allowed_in_production() -> None:
