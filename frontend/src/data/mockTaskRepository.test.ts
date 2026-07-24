@@ -29,7 +29,7 @@ describe('mock task repository', () => {
     expect(result.error?.code).toBe('INVALID_TASK_STATE');
   });
 
-  it('returns an independent ParseResult with the original summary and issues', async () => {
+  it('creates a review-ready workspace after parsing an uploaded source file', async () => {
     const repository = createMockTaskRepository();
     const task = await repository.createTask({ task_name: '夏季短袖上新', category: '服饰' });
     await repository.uploadSource(task.data!.id, 'products.xlsx');
@@ -37,12 +37,23 @@ describe('mock task repository', () => {
     const result = await repository.startParse(task.data!.id);
 
     expect(result).toMatchObject({
-      status: 'success',
-      data: { summary: { product_count: 0, sku_count: 0, issue_count: 0 } },
-      issues: [],
+      status: 'needs_review',
+      data: {
+        summary: {
+          product_count: 1,
+          sku_count: 6,
+          issue_count: 5,
+          error_count: 2,
+        },
+      },
       error: null,
     });
     expect(result.data).not.toHaveProperty('task');
+
+    const workspace = await repository.getWorkspace(task.data!.id);
+    expect(workspace.data?.task.status).toBe('WAITING_PRODUCT_REVIEW');
+    expect(workspace.data?.products).toHaveLength(1);
+    expect(workspace.data?.skus).toHaveLength(6);
   });
 
   it('applies only safe normalization fixes and records the operation', async () => {

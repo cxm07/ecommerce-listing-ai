@@ -15,6 +15,7 @@ import { triggerBlobDownload } from "./domain/download";
 import { canApprove } from "./domain/permissions";
 import { issueBusinessLabel, issueLocationLabel } from "./domain/issuePresentation";
 import { getTaskActionState, taskStatusLabels } from "./domain/workflow";
+import { isProductReviewReady } from "./domain/reviewReadiness";
 import { taskRepository } from "./data/repositoryFactory";
 import { AppShell } from "./components/AppShell";
 import { WorkspaceStep } from "./components/WorkspaceStep";
@@ -285,6 +286,7 @@ export function NewTaskPage() {
 
 export function UploadPage() {
   const { taskId, workspace, setWorkspace, message } = useWorkspace();
+  const navigate = useNavigate();
   const [parseResponse, setParseResponse] =
     useState<ApiResponse<ParseResult> | null>(null);
   const upload = async (file: File) => {
@@ -299,7 +301,15 @@ export function UploadPage() {
     setParseResponse(result);
     if (!result.data) return;
     const refreshed = await taskRepository.getWorkspace(taskId);
-    if (refreshed.data) setWorkspace({ ...refreshed.data });
+    if (!refreshed.data) return;
+
+    setWorkspace({ ...refreshed.data });
+    navigate(
+      isProductReviewReady(refreshed.data)
+        ? `/tasks/${taskId}/products`
+        : `/tasks/${taskId}/processing`,
+      { replace: true },
+    );
   };
   if (!workspace) return <LoadingPage />;
   if (workspace.task.status !== "DRAFT" && workspace.task.status !== "UPLOADED") {
@@ -337,7 +347,32 @@ export function UploadPage() {
 }
 
 export function ProcessingPage() {
-  const { workspace } = useWorkspace();
+  const { taskId, workspace, setWorkspace } = useWorkspace();
+  const navigate = useNavigate();
+  const awaitingReviewData =
+    workspace?.task.status === "PARSING" ||
+    (workspace?.task.status === "WAITING_PRODUCT_REVIEW" &&
+      !isProductReviewReady(workspace));
+
+  useEffect(() => {
+    if (!workspace) return;
+    if (isProductReviewReady(workspace)) {
+      navigate(`/tasks/${taskId}/products`, { replace: true });
+      return;
+    }
+    if (!awaitingReviewData) return;
+
+    const intervalId = window.setInterval(async () => {
+      const refreshed = await taskRepository.getWorkspace(taskId);
+      if (!refreshed.data) return;
+      setWorkspace({ ...refreshed.data });
+      if (isProductReviewReady(refreshed.data)) {
+        navigate(`/tasks/${taskId}/products`, { replace: true });
+      }
+    }, 1500);
+    return () => window.clearInterval(intervalId);
+  }, [awaitingReviewData, navigate, setWorkspace, taskId, workspace]);
+
   if (!workspace) return <LoadingPage />;
   const action = getTaskActionState({
     status: workspace.task.status,
@@ -347,15 +382,23 @@ export function ProcessingPage() {
   return (
     <AppShell eyebrow="处理进度" title="解析与标准化">
       <section className="progress-card">
-        <div className="orbit">✓</div>
-        <p className="eyebrow">当前状态</p>
-        <h2>{taskStatusLabels[workspace.task.status]}</h2>
-        <p>
-          解析结果与下一步由后端状态机决定；前端只按返回的任务状态展示可执行操作。
-        </p>
-        <Link className="primary-button" to={action.href}>
-          {action.label}
-        </Link>
+        <div className={`orbit${awaitingReviewData ? " is-active" : ""}`}>
+          {awaitingReviewData ? "···" : "✓"}
+        </div>
+        <p className="eyebrow">{awaitingReviewData ? "正在处理" : "当前状态"}</p>
+        <h2>{awaitingReviewData ? "正在准备商品审核" : taskStatusLabels[workspace.task.status]}</h2>
+        {awaitingReviewData ? (
+          <>
+            <p>系统正在解析、标准化并检查商品数据。完成后会自动带你进入商品审核，无需再从左侧导航操作。</p>
+            <p className="processing-note" role="status">正在同步解析结果…</p>
+            <Link className="soft-button" to="/tasks">返回任务中心</Link>
+          </>
+        ) : (
+          <>
+            <p>解析结果与下一步由后端状态机决定；前端只按返回的任务状态展示可执行操作。</p>
+            <Link className="primary-button" to={action.href}>{action.label}</Link>
+          </>
+        )}
       </section>
       <Stepper workspace={workspace} />
     </AppShell>
@@ -405,6 +448,9 @@ export function ProductReviewPage() {
     return false;
   };
   if (!workspace) return <LoadingPage />;
+  if (!isProductReviewReady(workspace)) {
+    return <Navigate replace to={`/tasks/${taskId}/processing`} />;
+  }
   const openErrors = errors(workspace.issues);
   const product = workspace.products[0];
   const editingSku = workspace.skus.find((sku) => sku.id === editingSkuId);

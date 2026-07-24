@@ -165,6 +165,10 @@ label { display: grid; gap: 6px; color: var(--ink-secondary); font-size: 0.8125r
 .notice-success { margin: var(--space-4) 0 0; border-left: 3px solid var(--success); padding: var(--space-3); color: #255b45; background: var(--success-soft); font-size: 0.8125rem; line-height: 1.55; }
 .progress-card { text-align: center; }
 .orbit, .export-icon { display: grid; width: 48px; height: 48px; margin: 0 auto var(--space-4); place-items: center; border-radius: 50%; color: var(--primary); background: var(--primary-soft); font-weight: 800; }
+.orbit.is-active { animation: processing-pulse 1.4s ease-in-out infinite; letter-spacing: 2px; }
+.processing-note { color: var(--primary) !important; font-weight: 700; }
+@keyframes processing-pulse { 50% { transform: scale(1.08); box-shadow: 0 0 0 8px color-mix(in srgb, var(--primary-soft) 55%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .orbit.is-active { animation: none; } }
 
 .review-workbench { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(288px, .78fr); gap: var(--space-5); align-items: start; }
 .product-card { min-width: 0; }

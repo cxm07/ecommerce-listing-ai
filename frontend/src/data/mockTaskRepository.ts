@@ -50,6 +50,46 @@ function makeDemoWorkspace(): TaskWorkspace {
   return { task, files: [{ id: 'file-source', task_id: task.id, storage_path: '/mock/sample-products.xlsx', original_filename: 'sample-products.xlsx', file_kind: 'source', created_at: now }], products: [product], skus, issues, generated_content: [], approvals: [], audit_logs };
 }
 
+function populateParsedReviewData(workspace: TaskWorkspace) {
+  if (workspace.products.length) return;
+
+  const source = workspace.files.find((file) => file.file_kind === 'source');
+  if (!source) return;
+
+  const fixture = makeDemoWorkspace();
+  const templateProduct = fixture.products[0];
+  const productId = `product-${workspace.task.id}`;
+  const product: Product = {
+    ...templateProduct,
+    id: productId,
+    task_id: workspace.task.id,
+    product_name: workspace.task.task_name,
+    category: workspace.task.category,
+  };
+  const skuIds = new Map<string, string>();
+  const skus = fixture.skus.map((sku) => {
+    const id = `${workspace.task.id}-${sku.id}`;
+    skuIds.set(sku.id, id);
+    return { ...sku, id, product_id: productId };
+  });
+  const issues = fixture.issues.map((issue) => ({
+    ...issue,
+    id: `${workspace.task.id}-${issue.id}`,
+    task_id: workspace.task.id,
+    product_id: productId,
+    sku_id: issue.sku_id ? skuIds.get(issue.sku_id) ?? null : null,
+    source_ref: {
+      ...issue.source_ref,
+      file_id: source.id,
+      file_name: source.original_filename,
+    },
+  }));
+
+  workspace.products = [product];
+  workspace.skus = skus;
+  workspace.issues = issues;
+}
+
 const unresolved = (workspace: TaskWorkspace) => workspace.issues.filter((issue) => !issue.resolved);
 
 export function createMockTaskRepository(): TaskRepository {
@@ -78,6 +118,7 @@ export function createMockTaskRepository(): TaskRepository {
       const workspace = find(taskId);
       if (!workspace) return failure('TASK_NOT_FOUND', '未找到该任务');
       if (workspace.task.status !== 'UPLOADED') return failure('INVALID_TASK_STATE', '请先上传源文件');
+      populateParsedReviewData(workspace);
       workspace.task.status = 'WAITING_PRODUCT_REVIEW'; audit(workspace, 'parsing_completed');
       const issues = unresolved(workspace);
       return { status: issues.length ? 'needs_review' : 'success', data: { summary: { product_count: workspace.products.length, sku_count: workspace.skus.length, issue_count: issues.length, error_count: issues.filter((issue) => issue.severity === 'error').length, warning_count: issues.filter((issue) => issue.severity === 'warning').length, info_count: issues.filter((issue) => issue.severity === 'info').length } }, issues, error: null };
