@@ -120,6 +120,10 @@ class SupabaseStorageAdapter(StorageAdapter):
         validate_path(path)
         return f"{self.url}/storage/v1/object/{self.bucket}/{path}"
 
+    def _info_url(self, path: str) -> str:
+        validate_path(path)
+        return f"{self.url}/storage/v1/object/info/{self.bucket}/{path}"
+
     def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
         extra_headers = kwargs.pop("headers", {})
         try:
@@ -151,6 +155,16 @@ class SupabaseStorageAdapter(StorageAdapter):
         return response.content
 
     def delete(self, path: str) -> None:
+        # Storage's object DELETE can report a non-404 response for a repeated
+        # delete.  Query its documented object-info endpoint first so deletion
+        # is idempotent without treating an arbitrary write failure as success.
+        try:
+            if not self.exists(path):
+                return
+        except DomainError as exc:
+            if exc.code == "STORAGE_UNAVAILABLE":
+                raise DomainError("STORAGE_COMPENSATION_FAILED", "存储补偿删除失败", 503) from exc
+            raise
         try:
             response = self._request("DELETE", path)
         except DomainError as exc:
@@ -163,7 +177,10 @@ class SupabaseStorageAdapter(StorageAdapter):
             raise DomainError("STORAGE_COMPENSATION_FAILED", "存储补偿删除失败", 503)
 
     def exists(self, path: str) -> bool:
-        response = self._request("HEAD", path)
+        try:
+            response = self.client.request("HEAD", self._info_url(path), headers=self._headers)
+        except httpx.HTTPError as exc:
+            raise DomainError("STORAGE_UNAVAILABLE", "对象存储当前不可用", 503) from exc
         if response.status_code == 404:
             return False
         if response.is_error:
