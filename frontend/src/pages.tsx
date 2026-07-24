@@ -16,7 +16,7 @@ import { canApprove } from "./domain/permissions";
 import { issueBusinessLabel, issueLocationLabel } from "./domain/issuePresentation";
 import { getTaskActionState, taskStatusLabels } from "./domain/workflow";
 import { taskRepository } from "./data/repositoryFactory";
-import { NavigationItem } from "./components/NavigationItem";
+import { AppShell } from "./components/AppShell";
 import { WorkspaceStep } from "./components/WorkspaceStep";
 import { filterTasks } from "./components/TaskFilters";
 import { UploadCard } from "./components/UploadCard";
@@ -29,7 +29,6 @@ import {
 
 const demoId = "task-demo";
 const isApiMode = import.meta.env.VITE_DATA_SOURCE === "api";
-const dataSourceLabel = isApiMode ? "真实后端 API" : "本地 Mock 适配器";
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat("zh-CN", {
     month: "short",
@@ -46,94 +45,6 @@ function StatusPill({ status }: { status: Task["status"] }) {
     <span className={`status status-${status.toLowerCase()}`}>
       {taskStatusLabels[status]}
     </span>
-  );
-}
-function Shell({
-  title,
-  eyebrow,
-  children,
-  action,
-}: {
-  title: string;
-  eyebrow: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <Link className="brand" to="/tasks">
-          <span>EA</span>
-          <b>上新工作台</b>
-        </Link>
-        <nav>
-          <NavigationItem
-            to="/tasks"
-            label="任务中心"
-            activeWhen={(path) =>
-              path === "/" || path === "/tasks" || path === "/tasks/new" || path.includes("/upload") || path.includes("/processing")
-            }
-          />
-          <NavigationItem
-            to={`/tasks/${demoId}/products`}
-            label="审核工作台"
-            activeWhen={(path) =>
-              path.includes("/products") ||
-              path.includes("/copy") ||
-              path.includes("/export")
-            }
-          />
-          <NavigationItem
-            to={`/tasks/${demoId}/audit`}
-            label="审核记录"
-            activeWhen={(path) => path.includes("/audit")}
-          />
-        </nav>
-        <UserNav />
-        <div className="sidebar-foot">
-          MVP · 前端演示
-          <br />
-          <small>数据来自{dataSourceLabel}</small>
-        </div>
-      </aside>
-      <main className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">{eyebrow}</p>
-            <h1>{title}</h1>
-          </div>
-          {action}
-        </header>
-        {children}
-      </main>
-    </div>
-  );
-}
-function UserNav() {
-  const auth = useOptionalAuth();
-  if (!auth?.session) return null;
-  const roleLabels: Record<string, string> = {
-    operator: "运营人员",
-    reviewer: "审核人员",
-    admin: "管理员",
-  };
-  return (
-    <div className="current-user">
-      <span className="user-avatar">
-        {auth.session.user.display_name.slice(0, 1)}
-      </span>
-      <div>
-        <b>{auth.session.user.display_name}</b>
-        <small data-testid="current-user-role">
-          {auth.session.user.roles
-            .map((role) => roleLabels[role] ?? role)
-            .join("、")}
-        </small>
-      </div>
-      <button type="button" onClick={() => void auth.signOut()}>
-        退出登录
-      </button>
-    </div>
   );
 }
 function Stepper({ workspace }: { workspace: TaskWorkspace }) {
@@ -209,7 +120,7 @@ export function TaskListPage() {
     return true;
   });
   return (
-    <Shell
+    <AppShell
       eyebrow="任务中心"
       title="商品上新任务"
       action={
@@ -311,7 +222,7 @@ export function TaskListPage() {
           )}
         </div>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -332,7 +243,7 @@ export function NewTaskPage() {
     if (result.data) nav(`/tasks/${result.data.id}/upload`);
   };
   return (
-    <Shell eyebrow="创建任务" title="开始一批新的上新资料">
+    <AppShell eyebrow="创建任务" title="开始一批新的上新资料">
       <WorkspaceStep status="DRAFT" />
       <section className="form-card">
         <p>创建后上传受控的 Excel 模板。任务名称用于区分本次上新批次，不会改变商品事实。</p>
@@ -368,7 +279,7 @@ export function NewTaskPage() {
           </button>
         </form>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -396,7 +307,7 @@ export function UploadPage() {
     return <Navigate replace to={action.href} />;
   }
   return (
-    <Shell eyebrow="文件上传" title={workspace.task.task_name}>
+    <AppShell eyebrow="文件上传" title={workspace.task.task_name}>
       <Stepper workspace={workspace} />
       <section className="upload-workspace panel">
         <div>
@@ -421,7 +332,7 @@ export function UploadPage() {
           <p className="muted">{message}</p>
         </div>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -434,7 +345,7 @@ export function ProcessingPage() {
     taskId: workspace.task.id,
   });
   return (
-    <Shell eyebrow="处理进度" title="解析与标准化">
+    <AppShell eyebrow="处理进度" title="解析与标准化">
       <section className="progress-card">
         <div className="orbit">✓</div>
         <p className="eyebrow">当前状态</p>
@@ -447,7 +358,7 @@ export function ProcessingPage() {
         </Link>
       </section>
       <Stepper workspace={workspace} />
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -507,7 +418,7 @@ export function ProductReviewPage() {
   };
   const isApprover = canApprove(auth?.session?.user.roles);
   return (
-    <Shell
+    <AppShell
       eyebrow="审核工作台"
       title={workspace.task.task_name}
       action={<StatusPill status={workspace.task.status} />}
@@ -580,7 +491,7 @@ export function ProductReviewPage() {
           </section>
         </aside>
       </div>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -611,7 +522,7 @@ export function CopyReviewPage() {
     workspace.task.status === "EXPORTED";
   const isApprover = canApprove(auth?.session?.user.roles);
   return (
-    <Shell eyebrow="文案审核" title="确认商品表达">
+    <AppShell eyebrow="文案审核" title="确认商品表达">
       <Stepper workspace={workspace} />
       <div className="review-grid">
         <section className="panel copy-card">
@@ -652,7 +563,7 @@ export function CopyReviewPage() {
         </section>
         <IssuePanel issues={workspace.issues} />
       </div>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -674,7 +585,7 @@ export function ExportPage() {
   if (!workspace) return <LoadingPage />;
   const exported = workspace.task.status === "EXPORTED";
   return (
-    <Shell eyebrow="导出结果" title="准备交付上新资料">
+    <AppShell eyebrow="导出结果" title="准备交付上新资料">
       <section className="export-card">
         <div className="export-icon">↓</div>
         <p className="eyebrow">最终交付</p>
@@ -700,7 +611,7 @@ export function ExportPage() {
           </button>
         )}
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 
@@ -718,7 +629,7 @@ export function AuditPage() {
     visibleLogs[0] ??
     null;
   return (
-    <Shell eyebrow="审核记录" title="操作与审核记录">
+    <AppShell eyebrow="审核记录" title="操作与审核记录">
       <section className="panel audit-card">
         <div className="panel-title">
           <div>
@@ -756,21 +667,21 @@ export function AuditPage() {
           <AuditDetailPanel event={selectedAudit} />
         </div>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 export function LoginPage() {
   return (
-    <Shell eyebrow="访问控制" title="登录将在后续迭代接入">
+    <AppShell eyebrow="访问控制" title="登录将在后续迭代接入">
       <section className="panel">
         <p>当前 MVP 不处理真实身份认证，也不会在前端保存任何密钥。</p>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 export function NotFoundPage() {
   return (
-    <Shell
+    <AppShell
       eyebrow="404"
       title="页面不存在"
       action={
@@ -782,15 +693,15 @@ export function NotFoundPage() {
       <section className="panel">
         <p>请从任务中心重新进入工作流。</p>
       </section>
-    </Shell>
+    </AppShell>
   );
 }
 function LoadingPage() {
   return (
-    <Shell eyebrow="加载中" title="正在准备工作台">
+    <AppShell eyebrow="加载中" title="正在准备工作台">
       <section className="panel">
-        <p className="muted">正在读取{dataSourceLabel}…</p>
+        <p className="muted">正在读取任务数据…</p>
       </section>
-    </Shell>
+    </AppShell>
   );
 }

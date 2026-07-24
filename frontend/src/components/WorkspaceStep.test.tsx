@@ -20,4 +20,11 @@ describe('WorkspaceStep', () => {
     expect(stepper.querySelectorAll('[data-step-node]').length).toBe(6);
     expect(stepper.querySelectorAll('[data-step-connector]').length).toBe(5);
   });
+
+  it('gives every stage a visible marker and announces the current stage', () => {
+    render(<WorkspaceStep status="WAITING_PRODUCT_REVIEW" />);
+    const stepper = screen.getByLabelText('任务流程');
+    expect(stepper.querySelectorAll('[data-step-marker]').length).toBe(6);
+    expect(screen.getByLabelText('当前步骤：审核商品')).not.toBeNull();
+  });
 });

@@ -7,8 +7,11 @@ export function WorkspaceStep({ status }: { status: TaskStatus }) {
     const state = status === 'FAILED' && index === current ? 'failed' : index < current ? 'complete' : index === current ? 'current' : 'upcoming';
     return <li data-state={state} key={step.status}>
       <div className="workflow-step-node" data-step-node>
-        <span aria-hidden="true">{index + 1}</span>
-        <b>{step.label}</b>
+        <span className="workflow-step-marker" data-step-marker aria-hidden="true">
+          {state === 'complete' ? '✓' : index + 1}
+        </span>
+        {state === 'current' ? <span className="sr-only" aria-label={`当前步骤：${step.label}`}>当前步骤：{step.label}</span> : null}
+        <b className="workflow-step-label">{step.label}</b>
       </div>
       {index < workflowSteps.length - 1 ? <i aria-hidden="true" data-step-connector /> : null}
     </li>;
