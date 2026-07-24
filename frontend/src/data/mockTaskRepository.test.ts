@@ -81,5 +81,8 @@ describe('mock task repository', () => {
     const generation = await repository.generateCopy('task-demo');
     expect(generation.data?.task.status).toBe('WAITING_COPY_REVIEW');
     expect(generation.data?.generated_content).toHaveLength(1);
+
+    const copyApproval = await repository.approveCopy('task-demo');
+    expect(copyApproval.data?.task.status).toBe('APPROVED');
   });
 });

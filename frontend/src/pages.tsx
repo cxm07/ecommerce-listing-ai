@@ -568,6 +568,7 @@ export function ProductReviewPage() {
 export function CopyReviewPage() {
   const { taskId, workspace, setWorkspace, message, setMessage } =
     useWorkspace();
+  const navigate = useNavigate();
   const auth = useOptionalAuth();
   const generate = async () => {
     const result = await taskRepository.generateCopy(taskId);
@@ -582,6 +583,16 @@ export function CopyReviewPage() {
       setWorkspace({ ...result.data });
       setMessage("文案审核已通过，可以导出。");
     } else setMessage(result.error?.message ?? "暂时不能审核");
+  };
+  const simulateCopyApproval = async () => {
+    const result = await taskRepository.approveCopy(taskId);
+    if (!result.data) {
+      setMessage(result.error?.message ?? "暂时不能模拟审核");
+      return;
+    }
+
+    setWorkspace({ ...result.data });
+    navigate(`/tasks/${taskId}/export`, { replace: true });
   };
   if (!workspace) return <LoadingPage />;
   const content = workspace.generated_content[0];
@@ -621,14 +632,20 @@ export function CopyReviewPage() {
                       ? "文案审核已完成，可前往导出"
                       : "等待商品审核完成"}
               </b>
-              <small>{message || "文案不会自动视为商品事实。"}</small>
+              <small>{message || (!isApiMode && allowed ? "演示环境可模拟文案审核通过，并进入导出结果。" : "文案不会自动视为商品事实。")}</small>
             </div>
             {canGenerate && (
               <button className="soft-button" onClick={generate}>
                 生成商品文案
               </button>
             )}
-            {isApprover ? <button className="primary-button" disabled={!allowed} onClick={approve}>审核文案通过</button> : allowed ? <span className="review-handoff">文案确认将由审核人员完成。</span> : null}
+            {isApprover ? (
+              <button className="primary-button" disabled={!allowed} onClick={approve}>审核文案通过</button>
+            ) : !isApiMode && allowed ? (
+              <button className="primary-button" onClick={simulateCopyApproval}>模拟文案审核通过并查看导出</button>
+            ) : allowed ? (
+              <span className="review-handoff">文案确认将由审核人员完成。</span>
+            ) : null}
           </div>
         </section>
         <IssuePanel issues={workspace.issues} />
