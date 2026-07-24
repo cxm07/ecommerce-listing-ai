@@ -54,6 +54,11 @@ def public_task(task: "Task") -> dict[str, Any]:
     }
 
 
+def public_task_file(item: "TaskFile") -> dict[str, Any]:
+    """Keep persisted storage metadata internal to the V1 workspace contract."""
+    return {key: getattr(item, key) for key in ("id", "task_id", "storage_path", "original_filename", "file_kind", "created_at")}
+
+
 class DomainError(Exception):
     def __init__(self, code: str, message: str, status: int = 400, details: dict[str, Any] | None = None):
         self.code, self.message, self.status, self.details = code, message, status, details
@@ -69,6 +74,7 @@ class Task:
 @dataclass
 class TaskFile:
     id: UUID; task_id: UUID; storage_path: str; original_filename: str; file_kind: str; created_at: str = field(default_factory=now)
+    size_bytes: int = 0; content_hash: str | None = None; mime_type: str | None = None
 
 @dataclass
 class Product:
@@ -185,27 +191,6 @@ class MemoryRepository:
         yield self
 
 
-class LocalFileStorage:
-    def __init__(self, root: Path) -> None: self.root = root
-    def save(self, kind: str, payload: bytes) -> str:
-        if not payload: raise DomainError("EMPTY_FILE", "上传文件不能为空")
-        folder = self.root / ("sources" if kind == "source" else "exports"); folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{uuid4()}.xlsx"
-        path.write_bytes(payload)
-        return str(path.relative_to(self.root))
-    def read(self, relative: str) -> bytes:
-        path = (self.root / relative).resolve()
-        if self.root.resolve() not in path.parents or not path.is_file(): raise DomainError("FILE_NOT_FOUND", "文件不存在", 404)
-        return path.read_bytes()
-    def delete(self, relative: str) -> None:
-        """Delete an internally-created storage path without allowing traversal."""
-        root = self.root.resolve()
-        path = (root / relative).resolve()
-        if root not in path.parents:
-            raise DomainError("INVALID_STORAGE_PATH", "Invalid storage path.")
-        path.unlink(missing_ok=True)
-
-
 def atomic(operation: Any) -> Any:
     """Run one application command against a rollback-capable repository UoW."""
     def wrapped(self: "WorkflowApplication", *args: Any, **kwargs: Any) -> Any:
@@ -252,7 +237,7 @@ class ExcelOutputAdapter:
 
 class WorkflowApplication:
     """Workflow orchestration using a repository factory for reads and a UoW for writes."""
-    def __init__(self, repository_factory: Any, storage: LocalFileStorage, actor_id: str, max_upload_bytes: int):
+    def __init__(self, repository_factory: Any, storage: Any, actor_id: str, max_upload_bytes: int):
         self.repository_factory, self.repo = repository_factory, repository_factory
         self.storage, self.actor_id, self.max_upload_bytes = storage, actor_id, max_upload_bytes
         self.workflow, self.reader, self.writer = WorkflowService(), ExcelSourceAdapter(), ExcelOutputAdapter()
@@ -302,36 +287,42 @@ class WorkflowApplication:
             return task
 
     def upload(self, task_id: UUID, filename: str, payload: bytes) -> TaskFile:
-        if not filename.lower().endswith(".xlsx"): raise DomainError("INVALID_FILE_TYPE", "仅支持 .xlsx 文件")
-        if len(payload) > self.max_upload_bytes: raise DomainError("FILE_TOO_LARGE", "文件超过大小限制")
-        if not payload: raise DomainError("EMPTY_FILE", "上传文件不能为空")
+        from app.storage import validate_payload
+        validate_payload(payload, self.max_upload_bytes, filename)
         with self.repository_factory.read_repository() as repo:
             task = repo.get_task(task_id)
             if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
             if any(item.file_kind == "source" for item in repo.list_task_files(task_id)):
                 raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
 
-        storage_path: str | None = None
+        file_id = uuid4()
+        stored = None
         try:
-            storage_path = self.storage.save("source", payload)
+            stored = self.storage.put_source(task_id, file_id, filename, payload)
             with self.repository_factory.unit_of_work() as uow:
                 repo = uow.repository
                 task = repo.get_task(task_id)
                 if task.status != TaskStatus.DRAFT: raise DomainError("INVALID_TASK_STATE", "当前任务状态不能上传文件", 409)
                 if any(item.file_kind == "source" for item in repo.list_task_files(task_id)):
                     raise DomainError("SOURCE_ALREADY_EXISTS", "任务已有原始文件，不能覆盖", 409)
-                item = TaskFile(uuid4(), task_id, storage_path, filename, "source")
+                item = TaskFile(file_id, task_id, stored.path, filename, "source", size_bytes=stored.size_bytes, content_hash=stored.content_hash, mime_type=stored.mime_type)
                 repo.add_file(item)
                 self.transition(repo, task, TaskStatus.UPLOADED, "source_uploaded")
                 uow.commit()
                 return item
-        except Exception:
-            if storage_path is not None:
-                try:
-                    self.storage.delete(storage_path)
-                except Exception:
-                    logger.warning("Failed to clean up rejected source upload", exc_info=True)
+        except Exception as original:
+            if stored is not None:
+                self._compensate_storage("upload", task_id, file_id, stored.path, original)
             raise
+
+    def _compensate_storage(self, operation: str, task_id: UUID, file_id: UUID, path: str, original: Exception) -> None:
+        try:
+            self.storage.delete(path)
+        except Exception as cleanup:
+            original_code = original.code if isinstance(original, DomainError) else type(original).__name__
+            cleanup_code = cleanup.code if isinstance(cleanup, DomainError) else type(cleanup).__name__
+            logger.warning("storage compensation failed operation=%s task_id=%s file_id=%s storage_path=%s original_error_code=%s compensation_error_code=%s", operation, task_id, file_id, path, original_code, cleanup_code)
+            raise DomainError("STORAGE_COMPENSATION_FAILED", "存储补偿删除失败", 503) from original
 
     def _parse_records(self, task_id: UUID, source: TaskFile) -> tuple[list[Product], list[SKU], list[Issue]]:
         rows = self.reader.parse(self.storage.read(source.storage_path))
@@ -462,7 +453,7 @@ class WorkflowApplication:
     @staticmethod
     def _workspace_from_repo(repo: Any, task_id: UUID) -> dict[str, Any]:
         task = repo.get_task(task_id); products = repo.list_products(task_id); skus = repo.list_skus(task_id)
-        return json_value({"task": public_task(task), "files": [asdict(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
+        return json_value({"task": public_task(task), "files": [public_task_file(x) for x in repo.list_task_files(task_id)], "products": [asdict(x) for x in products], "skus": [asdict(x) for x in skus], "issues": [asdict(x) for x in repo.list_issues(task_id)], "generated_content": [asdict(x) for x in repo.list_generated_content(task_id)], "approvals": [asdict(x) for x in repo.list_approvals(task_id)], "audit_logs": [asdict(x) for x in sorted(repo.list_audit_logs(task_id), key=lambda x: x.created_at, reverse=True)]})
     def patch_product(self, product_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
         with self.repository_factory.unit_of_work() as uow:
             repo = uow.repository
@@ -536,19 +527,28 @@ class WorkflowApplication:
         if not self.repo.list_generated_content(task_id): raise DomainError("CONTENT_NOT_FOUND", "没有可审核文案", 409)
         approval = Approval(uuid4(), task_id, self.actor_id, "copy", "approved", comment); self.repo.add_approval(approval); self.transition(task, TaskStatus.APPROVED, "copy_approved"); return self.workspace(task_id)
     def export(self, task_id: UUID) -> TaskFile:
-        with self.repository_factory.unit_of_work() as uow:
-            repo = uow.repository; task = repo.get_task(task_id)
+        with self.repository_factory.read_repository() as repo:
+            task = repo.get_task(task_id)
             if task.status != TaskStatus.APPROVED: raise DomainError("INVALID_TASK_STATE", "Export is not allowed in the current state.", 409)
-            products, content = repo.list_products(task_id), repo.list_generated_content(task_id)
-            if not content or {item.product_id for item in content} != {item.id for item in products}: raise DomainError("CONTENT_NOT_FOUND", "Complete generated content is required for export.", 409)
-            item = TaskFile(uuid4(), task_id, self.storage.save("export", self.writer.export(self._workspace_from_repo(repo, task_id))), f"listing-{task_id}.xlsx", "export")
-            repo.add_file(item)
-            self.transition(repo, task, TaskStatus.EXPORTED, "export_created")
-            uow.commit()
-            return item
-        task = self.repo.get_task(task_id)
-        if task.status != TaskStatus.APPROVED: raise DomainError("INVALID_TASK_STATE", "当前状态不能导出", 409)
-        item = TaskFile(uuid4(), task_id, self.storage.save("export", self.writer.export(self.workspace(task_id))), f"listing-{task_id}.xlsx", "export"); self.repo.add_file(item); self.transition(task, TaskStatus.EXPORTED, "export_created"); return item
+            payload = self.writer.export(self._workspace_from_repo(repo, task_id))
+        file_id = uuid4()
+        stored = None
+        try:
+            stored = self.storage.put_export(task_id, file_id, payload)
+            with self.repository_factory.unit_of_work() as uow:
+                repo = uow.repository; task = repo.get_task(task_id)
+                if task.status != TaskStatus.APPROVED: raise DomainError("INVALID_TASK_STATE", "Export is not allowed in the current state.", 409)
+                products, content = repo.list_products(task_id), repo.list_generated_content(task_id)
+                if not content or {item.product_id for item in content} != {item.id for item in products}: raise DomainError("CONTENT_NOT_FOUND", "Complete generated content is required for export.", 409)
+                item = TaskFile(file_id, task_id, stored.path, f"listing-{task_id}.xlsx", "export", size_bytes=stored.size_bytes, content_hash=stored.content_hash, mime_type=stored.mime_type)
+                repo.add_file(item)
+                self.transition(repo, task, TaskStatus.EXPORTED, "export_created")
+                uow.commit()
+                return item
+        except Exception as original:
+            if stored is not None:
+                self._compensate_storage("export", task_id, file_id, stored.path, original)
+            raise
     def download(self, task_id: UUID) -> tuple[TaskFile, bytes]:
         with self.repository_factory.read_repository() as repo:
             task = repo.get_task(task_id)
@@ -556,9 +556,7 @@ class WorkflowApplication:
             items = [item for item in repo.list_task_files(task_id) if item.file_kind == "export"]
             if not items: raise DomainError("EXPORT_NOT_FOUND", "Export file was not found.", 404)
             item = max(items, key=lambda x: x.created_at)
+            expected = f"tasks/{task_id}/exports/{item.id}/listing.xlsx"
+            if item.storage_path != expected:
+                raise DomainError("INVALID_STORAGE_REFERENCE", "导出文件引用无效", 500)
         return item, self.storage.read(item.storage_path)
-        task = self.repo.get_task(task_id)
-        if task.status != TaskStatus.EXPORTED: raise DomainError("INVALID_TASK_STATE", "当前状态不能下载", 409)
-        items = [item for item in self.repo.list_task_files(task_id) if item.file_kind == "export"]
-        if not items: raise DomainError("EXPORT_NOT_FOUND", "未找到导出文件", 404)
-        item = max(items, key=lambda x: x.created_at); return item, self.storage.read(item.storage_path)

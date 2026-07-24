@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -12,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from app.config import Settings, settings
-from app.core import DomainError, LocalFileStorage, MemoryRepository, WorkflowApplication, json_value, public_task
+from app.core import DomainError, MemoryRepository, WorkflowApplication, json_value, public_task
 from app.persistence import PostgresRepositoryFactory, StaticActorProvider
+from app.storage import create_storage
 from app.models import ApprovalRequest, ApiError, ApiResponse, CreateTaskRequest, PatchProductRequest, PatchSkuRequest
 
 
@@ -42,7 +42,7 @@ def create_app(app_settings: Settings = settings, service: WorkflowApplication |
 
     app = FastAPI(title="ecommerce-listing-ai", version="0.1.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=app_settings.cors_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
-    app.state.service = service or WorkflowApplication(repository, LocalFileStorage(Path(app_settings.storage_dir)), app_settings.demo_actor_id, app_settings.max_upload_bytes)
+    app.state.service = service or WorkflowApplication(repository, create_storage(app_settings), app_settings.demo_actor_id, app_settings.max_upload_bytes)
 
     def get_service(request: Request) -> WorkflowApplication: return request.app.state.service
 

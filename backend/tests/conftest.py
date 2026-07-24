@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.core import LocalFileStorage, MemoryRepository, WorkflowApplication
+from app.core import MemoryRepository, WorkflowApplication
+from app.storage import LocalStorageAdapter
 from app.main import create_app
 
 
@@ -13,7 +14,7 @@ def client(tmp_path: Path) -> TestClient:
     app_settings = Settings(APP_STORAGE_DIR=tmp_path)
     service = WorkflowApplication(
         MemoryRepository(),
-        LocalFileStorage(tmp_path),
+        LocalStorageAdapter(tmp_path, app_settings.max_upload_bytes),
         app_settings.demo_actor_id,
         app_settings.max_upload_bytes,
     )

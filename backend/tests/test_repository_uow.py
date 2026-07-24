@@ -2,7 +2,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.core import DomainError, LocalFileStorage, MemoryRepository, Task, WorkflowApplication
+from app.core import DomainError, MemoryRepository, Task, WorkflowApplication
+from app.storage import LocalStorageAdapter
 
 
 def test_memory_unit_of_work_commits_and_rolls_back() -> None:
@@ -21,14 +22,14 @@ def test_memory_unit_of_work_commits_and_rolls_back() -> None:
 
 
 def test_command_failure_does_not_leave_task_or_audit(tmp_path) -> None:
-    service = WorkflowApplication(MemoryRepository(), LocalFileStorage(tmp_path), str(uuid4()), 1024)
+    service = WorkflowApplication(MemoryRepository(), LocalStorageAdapter(tmp_path, 1024), str(uuid4()), 1024)
     with pytest.raises(DomainError):
         service.create_task("", "category")
     assert service.list_tasks() == []
 
 
 def test_memory_review_commands_advance_task_version(tmp_path, sample_workbook: bytes) -> None:
-    service = WorkflowApplication(MemoryRepository(), LocalFileStorage(tmp_path), str(uuid4()), 1024 * 1024)
+    service = WorkflowApplication(MemoryRepository(), LocalStorageAdapter(tmp_path, 1024 * 1024), str(uuid4()), 1024 * 1024)
     task = service.create_task("review", "category")
     service.upload(task.id, "sample-products.xlsx", sample_workbook)
     service.parse(task.id)

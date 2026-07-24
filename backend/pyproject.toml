@@ -22,7 +22,10 @@ dev = ["httpx==0.28.1", "pytest==8.4.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["postgres_integration: requires the disposable local Supabase Postgres instance"]
+markers = [
+  "postgres_integration: requires the disposable local Supabase Postgres instance",
+  "storage_integration: requires the disposable local Supabase Storage instance",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
