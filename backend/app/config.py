@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:5173"], validation_alias="CORS_ORIGINS")
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, validation_alias="MAX_UPLOAD_BYTES")
     demo_actor_id: str = Field(default="00000000-0000-0000-0000-000000000001", validation_alias="DEMO_ACTOR_ID")
+    data_repository: str = Field(default="memory", validation_alias="DATA_REPOSITORY")
+    supabase_db_url: str | None = Field(default=None, validation_alias="SUPABASE_DB_URL")
+    postgres_pool_min_size: int = Field(default=1, validation_alias="POSTGRES_POOL_MIN_SIZE")
+    postgres_pool_max_size: int = Field(default=5, validation_alias="POSTGRES_POOL_MAX_SIZE")
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -27,6 +31,14 @@ class Settings(BaseSettings):
                 value = value.split(",")
         if isinstance(value, list):
             return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        return value
+
+    @field_validator("data_repository")
+    @classmethod
+    def validate_repository(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"memory", "postgres"}:
+            raise ValueError("DATA_REPOSITORY must be memory or postgres")
         return value
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

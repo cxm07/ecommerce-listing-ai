@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   frontend:
@@ -32,7 +31,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -e ".[dev]"
         working-directory: backend
-      - run: pytest -q
+      - run: pytest -q -m "not postgres_integration"
         working-directory: backend
 
   database-schema:
@@ -45,6 +44,20 @@ jobs:
           version: 2.81.1
       - run: supabase start
       - run: supabase db reset --local
+      - name: Export disposable local Supabase connection settings
+        run: supabase status -o env | sed -E 's/^([A-Z_]+)="(.*)"$/\1=\2/' >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+        working-directory: backend
+      - name: Run Postgres repository integration tests
+        working-directory: backend
+        env:
+          SUPABASE_DB_URL: ${{ env.DB_URL }}
+          DATA_REPOSITORY: postgres
+          APP_ENV: test
+        run: pytest -q -m postgres_integration
       - name: Run schema assertions through local Postgres
         run: |
           db_container="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
